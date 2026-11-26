@@ -75,6 +75,7 @@ def simulate(init_states: np.ndarray, doy_sincos, steps: int, perturbation) -> n
     if not np.all(np.isfinite(out)):
         out = np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
     out[:, 1] = np.maximum(out[:, 1], 0.0)
+    out[:, 5] = np.maximum(out[:, 5], 0.0)
     return out
 
 
