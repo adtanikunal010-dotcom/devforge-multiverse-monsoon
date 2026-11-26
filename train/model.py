@@ -125,6 +125,7 @@ def rollout_10_days(
         physical = current * std + mean
         physical = physical.clone()
         physical[:, 1] = torch.clamp(physical[:, 1], min=0.0)
+        physical[:, 5] = torch.clamp(physical[:, 5], min=0.0)
         current = (physical - mean) / std
         outputs.append(physical)
 
