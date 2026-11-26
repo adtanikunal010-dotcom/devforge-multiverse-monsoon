@@ -13,7 +13,7 @@ The target model is an encoder-decoder residual U-Net that predicts daily change
 
 #### Anti-blur and physical guardrails
 
-The planned anti-blur approach combines residual delta prediction with a spatial-gradient loss to preserve local structure, alongside a multi-step rollout loss to reduce accumulated drift. Precipitation must remain non-negative in physical units. Training is intended to use a chronological split, with later years reserved for validation, and additional loss weight on precipitation. These are design requirements; they are not yet confirmed as implemented in this checkout.
+The anti-blur approach combines residual delta prediction with a spatial-gradient loss to preserve local structure, alongside a multi-step rollout loss to reduce accumulated drift. The training source weights precipitation loss and clamps predicted rain at zero. It uses a chronological split, with later years reserved for validation. The committed checkpoint loads strictly into the current model implementation.
 
 #### Counterfactual consistency
 
@@ -21,13 +21,13 @@ The same initial conditions can be run without a shock or with a localized pertu
 
 #### Validation results and known failure modes
 
-At brief preparation, this checkout still contains the starter persistence server and has no trained weights, training code, dashboard folder, or QA tests. The server repeats the last input state and adds perturbations directly; it does not demonstrate learned evolution, shock propagation, or a precipitation clamp. Forecast skill, spatial sharpness, zero-shock behavior, and CPU latency have not been validated here. No score or pass claim is made. These are integration blockers to resolve before submission.
+The single local verification runner passed 12/12 checks: API startup, output shape and finite values, non-negative rain, null-versus-zero shock equivalence, an extreme heat/moisture shock, dashboard presence and local-only API use, latency, and memory. Across three ten-day calls, median inference was 23.2 ms and maximum 23.9 ms; observed peak server RSS was 0.243 GB. These are workstation measurements, not results from the judges' four-core sandbox. The source training dataset is absent, so the checkpoint could not be regenerated here and held-out forecast skill versus persistence remains unverified. No forecast-skill or qualification claim is made.
 
 ### Page 2 — Decisions and Experiments
 
 #### Interactive Multiverse Dashboard
 
-The planned offline dashboard shows three synchronized views: the baseline forecast, a shocked forecast, and their cell-by-cell difference. A day slider and variable selector let users inspect precipitation, temperature, wind, pressure, and moisture across the ten-day horizon. Preset and map-based shocks support counterfactual exploration while the initial state stays fixed. The dashboard folder is not yet present in this checkout, so this remains a design target rather than a verified live interface.
+The offline dashboard shows three synchronized views: the baseline forecast, a shocked forecast, and their cell-by-cell difference. A day slider and variable selector let users inspect precipitation, temperature, wind, pressure, and moisture across the ten-day horizon. Preset and map-based shocks support counterfactual exploration while the initial state stays fixed. The interface uses local HTML, CSS, and JavaScript without external requests; browser-level visual verification remains part of the Wi-Fi-off rehearsal.
 
 #### Indian flood and drought decision support
 
@@ -37,7 +37,7 @@ These prototype alerts support exploration of where hazards may coincide and how
 
 #### Offline demonstration and readiness
 
-The intended presentation flow starts the local `/simulate` API, opens the dashboard, and compares baseline and perturbed scenarios. Before the demo, the contract validator, repository scan, zero-shock check, physical guards, and CPU benchmark must pass in an offline cold-start rehearsal. Those results are pending integration and have not been established by this checkout.
+The presentation flow starts the local `/simulate` API, opens the dashboard, and compares baseline and perturbed scenarios. Contract, zero-shock, physical-guard, and local CPU/RSS checks pass. The offline cold-start rehearsal and held-out forecast-skill comparison still need to be completed before making a final submission-readiness claim.
 
 #### Project outcome
 

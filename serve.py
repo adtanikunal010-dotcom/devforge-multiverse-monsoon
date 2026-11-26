@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from train.model import MonsoonResUNet, rollout_10_days
 
+torch.set_num_threads(min(4, torch.get_num_threads()))
+
 ROOT = Path(__file__).resolve().parent
 WEIGHTS_PATH = ROOT / "weights" / "monsoon_unet.pt"
 STATS_PATH = ROOT / "assets" / "stats.json"

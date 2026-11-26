@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Multiverse of Monsoon</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">YUGAANTAR DEVFORGE · TRACK 2</p>
+      <h1>Multiverse of Monsoon</h1>
+      <p class="subtitle">Explore a baseline forecast, apply a weather shock, and compare the two futures.</p>
+    </div>
+    <div id="connection" class="connection" role="status" aria-live="polite">Connecting to local model…</div>
+  </header>
+
+  <main>
+    <section class="controls panel" aria-label="Forecast controls">
+      <div class="control-row">
+        <label class="field">Variable
+          <select id="variable">
+            <option value="tp">Rain · tp (mm/day)</option>
+            <option value="t2m">Temperature · t2m (K)</option>
+            <option value="wind">Wind speed · u10/v10 (m/s)</option>
+            <option value="msl">Sea-level pressure · msl (Pa)</option>
+            <option value="tcwv">Water vapour · tcwv (kg/m²)</option>
+          </select>
+        </label>
+        <div class="timeline field">
+          <label for="day">Forecast day <strong id="day-label">Day 1</strong></label>
+          <div class="timeline-row">
+            <input id="day" type="range" min="1" max="10" value="1" step="1">
+            <button id="play" class="button quiet" type="button">Play</button>
+          </div>
+        </div>
+        <button id="refresh" class="button primary" type="button">Run forecast</button>
+      </div>
+      <div class="control-row shock-row">
+        <div class="field preset-field">
+          <span class="label">Preset shock</span>
+          <div class="button-group">
+            <button class="button preset" data-preset="warm" type="button">Warm Bay of Bengal +2 K</button>
+            <button class="button preset" data-preset="arabian" type="button">Weaken Arabian Sea winds −3 m/s</button>
+            <button class="button preset" data-preset="el-nino" type="button">El Niño heat dome</button>
+            <button id="clear-shock" class="button quiet" type="button">Clear shock</button>
+          </div>
+        </div>
+        <div class="field painter">
+          <label for="shock-size">Map shock · click any map</label>
+          <div class="painter-row">
+            <input id="shock-size" type="number" value="2" step="0.5" aria-label="Shock amount">
+            <span id="shock-unit">mm/day</span>
+            <span class="hint">Adds to the selected variable</span>
+          </div>
+        </div>
+      </div>
+      <p id="shock-status" class="status-note">No shock applied. Map clicks paint a local perturbation.</p>
+    </section>
+
+    <section id="error" class="error panel" hidden role="alert"></section>
+
+    <section class="maps" aria-label="Forecast maps">
+      <article class="map-card panel">
+        <div class="map-heading"><div><p class="eyebrow">TIMELINE PRIME</p><h2>Baseline</h2></div><span class="map-index">A</span></div>
+        <canvas id="map-base" width="720" height="640" aria-label="Baseline forecast map, click to paint a shock"></canvas>
+        <div class="map-scale"><span id="base-min">—</span><span class="gradient"></span><span id="base-max">—</span></div>
+      </article>
+      <article class="map-card panel">
+        <div class="map-heading"><div><p class="eyebrow">MULTIVERSE BRANCH</p><h2>Shock scenario</h2></div><span class="map-index">B</span></div>
+        <canvas id="map-shock" width="720" height="640" aria-label="Shock scenario forecast map, click to paint a shock"></canvas>
+        <div class="map-scale"><span id="shock-min">—</span><span class="gradient"></span><span id="shock-max">—</span></div>
+      </article>
+      <article class="map-card panel">
+        <div class="map-heading"><div><p class="eyebrow">DELTA ANOMALY</p><h2>Scenario − baseline</h2></div><span class="map-index">C</span></div>
+        <canvas id="map-delta" width="720" height="640" aria-label="Difference map between shock scenario and baseline, click to paint a shock"></canvas>
+        <div class="map-scale"><span id="delta-min">−</span><span class="gradient diverging"></span><span id="delta-max">+</span></div>
+      </article>
+    </section>
+
+    <section class="impact panel">
+      <div class="impact-intro">
+        <p class="eyebrow">DECISION SUPPORT · PROTOTYPE THRESHOLDS</p>
+        <h2>Impact alerts</h2>
+        <p>Counts use physical-unit forecast values. Rain and heat alerts show the selected day; drought uses the full 10-day branch.</p>
+      </div>
+      <div class="risk-grid" aria-live="polite">
+        <div class="risk"><span class="risk-dot heat"></span><span>Heatwave cells <small>t2m &gt; 313.15 K</small></span><strong id="heat-count">—</strong></div>
+        <div class="risk"><span class="risk-dot rain"></span><span>Heavy-rain cells <small>tp &gt; 64.5 mm/day</small></span><strong id="rain-count">—</strong></div>
+        <div class="risk"><span class="risk-dot cloud"></span><span>Cloudburst cells <small>tp &gt; 115.5 mm/day</small></span><strong id="cloud-count">—</strong></div>
+        <div class="risk"><span class="risk-dot drought"></span><span>Kharif drought stress <small>10-day tp &lt; 25 mm and mean t2m &gt; 308.15 K</small></span><strong id="drought-count">—</strong></div>
+      </div>
+      <p class="disclaimer">Prototype indicators only; they are not official IMD warnings. Synthetic sample inputs are used until connected to a real three-day initial state.</p>
+    </section>
+  </main>
+  <footer>Local offline interface · API: <code>http://localhost:8000/simulate</code> · grid 32 × 36</footer>
+</body>
+</html>

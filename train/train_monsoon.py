@@ -8,9 +8,13 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
+from torch.nn import functional as F
 import xarray as xr
 
-from model import MonsoonResUNet, normalize_static_maps, rollout_10_days
+try:
+    from .model import MonsoonResUNet, normalize_static_maps, rollout_10_days
+except ImportError:  # Support direct execution: python train/train_monsoon.py
+    from model import MonsoonResUNet, normalize_static_maps, rollout_10_days
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -51,6 +55,7 @@ def compute_rollout_loss(
     doy: torch.Tensor,
     static_norm: torch.Tensor,
     channel_weights: torch.Tensor,
+    tp_min_norm: float,
 ) -> torch.Tensor:
     """Compute weighted MSE over a multi-step autoregressive rollout in normalized space."""
     B, _, H, W = x0_norm.shape
@@ -62,11 +67,28 @@ def compute_rollout_loss(
     steps = targets_norm.shape[1]
 
     for step in range(steps):
-        doy_sin = torch.sin(2.0 * math.pi * (doy_b + step) / 365.25).expand(B, 1, H, W)
+        doy_sin = torch.sin(2.0 * math.pi * (doy_b + step + 1) / 365.25).expand(B, 1, H, W)
         inp = torch.cat([curr, static_b, doy_sin], dim=1)
         pred = model(inp)
+        pred = torch.cat(
+            [pred[:, :1], torch.clamp(pred[:, 1:2], min=tp_min_norm), pred[:, 2:]],
+            dim=1,
+        )
         sq_err = (pred - targets_norm[:, step]) ** 2
-        total_loss = total_loss + (sq_err * channel_weights).mean()
+        data_loss = (sq_err * channel_weights).mean()
+        grad_h = (
+            (pred[:, :, 1:, :] - pred[:, :, :-1, :])
+            - (targets_norm[:, step, :, 1:, :] - targets_norm[:, step, :, :-1, :])
+        )
+        grad_w = (
+            (pred[:, :, :, 1:] - pred[:, :, :, :-1])
+            - (targets_norm[:, step, :, :, 1:] - targets_norm[:, step, :, :, :-1])
+        )
+        spatial_loss = 0.5 * (
+            (grad_h.square() * channel_weights).mean()
+            + (grad_w.square() * channel_weights).mean()
+        )
+        total_loss = total_loss + data_loss + 0.1 * spatial_loss
         curr = pred
 
     return total_loss / steps
@@ -160,6 +182,7 @@ def main() -> None:
     channel_weights = torch.tensor(
         [1.0, 1.5, 1.0, 1.0, 1.0, 1.0], dtype=torch.float32, device=device
     ).view(1, 6, 1, 1)
+    tp_min_norm = -float(stats["mean"][1]) / float(stats["std"][1])
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
@@ -178,7 +201,7 @@ def main() -> None:
             doy = doy.to(device)
 
             optimizer.zero_grad(set_to_none=True)
-            loss = compute_rollout_loss(model, x0, tgt, doy, static_norm, channel_weights)
+            loss = compute_rollout_loss(model, x0, tgt, doy, static_norm, channel_weights, tp_min_norm)
             loss.backward()
             optimizer.step()
 
@@ -196,7 +219,7 @@ def main() -> None:
                 x0 = x0.to(device)
                 tgt = tgt.to(device)
                 doy = doy.to(device)
-                loss = compute_rollout_loss(model, x0, tgt, doy, static_norm, channel_weights)
+                loss = compute_rollout_loss(model, x0, tgt, doy, static_norm, channel_weights, tp_min_norm)
                 bs = x0.size(0)
                 val_loss_sum += loss.item() * bs
                 val_count += bs
