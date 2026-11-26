@@ -249,6 +249,13 @@ class VerificationSuite:
 
     def check_official_validator(self) -> None:
         self.section("2. OFFICIAL API CONTRACT VALIDATOR")
+        try:
+            module_available = importlib.util.find_spec("monsoon_r1.schema_validator") is not None
+        except (ImportError, ModuleNotFoundError, ValueError):
+            module_available = False
+        if not module_available:
+            self.skip("official schema_validator", "monsoon_r1 tools are not installed in this environment")
+            return
         command = [sys.executable, "-m", "monsoon_r1.schema_validator", self.base_url]
         code, output = self.run_command(command, timeout=180.0)
         self.result(

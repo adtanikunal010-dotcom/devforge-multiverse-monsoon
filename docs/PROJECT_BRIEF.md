@@ -21,7 +21,7 @@ The same initial conditions can be run without a shock or with a localized pertu
 
 #### Validation results and known failure modes
 
-The single local verification runner passed 12/12 checks: API startup, output shape and finite values, non-negative rain, null-versus-zero shock equivalence, an extreme heat/moisture shock, dashboard presence and local-only API use, latency, and memory. Across three ten-day calls, median inference was 23.2 ms and maximum 23.9 ms; observed peak server RSS was 0.243 GB. These are workstation measurements, not results from the judges' four-core sandbox. The source training dataset is absent, so the checkpoint could not be regenerated here and held-out forecast skill versus persistence remains unverified. No forecast-skill or qualification claim is made.
+The repository verifier reported 31 passed, 0 failed, and 3 skipped. The skips were the official repository scan and schema validator (their `monsoon_r1` tools are not installed here) and process-RAM inspection (blocked by macOS permissions). The separate local benchmark measured 23.2 ms median and 23.9 ms maximum inference over three ten-day calls, with 0.243 GB observed peak server RSS. These are workstation measurements, not results from the judges' four-core sandbox. The source training dataset is absent, so the checkpoint could not be regenerated here and held-out forecast skill versus persistence remains unverified. No forecast-skill or qualification claim is made.
 
 ### Page 2 — Decisions and Experiments
 
