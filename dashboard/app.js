@@ -239,7 +239,7 @@
       return total;
     };
     const heat = count((i, j) => frame[CHANNELS.t2m][i][j] > 313.15);
-    const heavy = count((i, j) => frame[CHANNELS.tp][i][j] > 64.5);
+    const heavy = count((i, j) => frame[CHANNELS.tp][i][j] > 64.5 && frame[CHANNELS.tp][i][j] <= 115.5);
     const cloud = count((i, j) => frame[CHANNELS.tp][i][j] > 115.5);
     let drought = 0;
     for (let i = 0; i < H; i++) {
