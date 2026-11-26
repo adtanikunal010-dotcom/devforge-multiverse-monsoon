@@ -15,6 +15,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -37,15 +38,23 @@ EXPECTED_OUTPUT_SHAPE = (10, 6, 32, 36)
 EXPECTED_PERTURBATION_SHAPE = (6, 32, 36)
 MAX_LATENCY_SECONDS = 5.0
 MAX_RAM_BYTES = 6 * 1024**3
+MAX_REPO_BYTES = 2 * 1024**3
+MAX_WEIGHT_BYTES = 5 * 1024**2
+TRAIN_DAYS = 5479  # First 15 years (2005-2019), per training split.
 
 
 class VerificationSuite:
-    def __init__(self, base_url: str, timeout: float = 20.0) -> None:
+    def __init__(self, base_url: str, timeout: float = 20.0,
+                 reference_dataset: Path | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.passed = 0
         self.failed = 0
         self.skipped = 0
+        self.required_skips = 0
+        self.warnings = 0
+        self.reference_dataset = reference_dataset
+        self.reference_day8: np.ndarray | None = None
         self.initial_states: np.ndarray | None = None
         self.doy_sincos = [math.sin(2 * math.pi * 180 / 365.0),
                            math.cos(2 * math.pi * 180 / 365.0)]
@@ -60,9 +69,16 @@ class VerificationSuite:
         else:
             self.failed += 1
 
-    def skip(self, name: str, detail: str = "") -> None:
-        print(f"[SKIP] {name}" + (f" — {detail}" if detail else ""))
+    def warn(self, name: str, detail: str = "") -> None:
+        print(f"[WARN] {name}" + (f" — {detail}" if detail else ""))
+        self.warnings += 1
+
+    def skip(self, name: str, detail: str = "", *, required: bool = False) -> None:
+        suffix = " (required check not completed)" if required else ""
+        print(f"[SKIP] {name}{suffix}" + (f" — {detail}" if detail else ""))
         self.skipped += 1
+        if required:
+            self.required_skips += 1
 
     def section(self, title: str) -> None:
         print(f"\n{'=' * 72}\n{title}\n{'=' * 72}")
@@ -95,6 +111,33 @@ class VerificationSuite:
 
         serve_path = ROOT / "serve.py"
         self.result("serve.py exists at repository root", serve_path.is_file(), str(serve_path))
+
+        required_paths = [
+            "train/model.py", "train/train_monsoon.py",
+            "weights/monsoon_unet.pt", "assets/static_maps.npy",
+            "dashboard/index.html", "dashboard/style.css", "dashboard/app.js",
+            "README.md", "R1_CONTRACT.md", "docs/IMD_THRESHOLDS.md",
+            "docs/PROJECT_BRIEF.pdf",
+        ]
+        for relative in required_paths:
+            self.result(f"required file exists: {relative}", (ROOT / relative).is_file())
+
+        static_path = ROOT / "assets" / "static_maps.npy"
+        if not static_path.is_file():
+            self.result("static_maps.npy has shape [2,32,36] and finite values", False,
+                        "assets/static_maps.npy is missing")
+        else:
+            try:
+                static_maps = np.load(static_path, allow_pickle=False)
+                shape_ok = static_maps.shape == (2, 32, 36)
+                finite_ok = bool(np.isfinite(static_maps).all())
+                land_ok = bool(np.min(static_maps[0]) >= -1e-4 and np.max(static_maps[0]) <= 1.0 + 1e-4) if shape_ok else False
+                elevation_ok = bool(np.min(static_maps[1]) >= -500.0 and np.max(static_maps[1]) <= 6000.0) if shape_ok else False
+                ok = shape_ok and finite_ok and land_ok and elevation_ok
+                self.result("static_maps.npy has shape [2,32,36] and plausible finite maps", ok,
+                            f"shape={static_maps.shape}; finite={finite_ok}; land_mask_range_ok={land_ok}; elevation_range_ok={elevation_ok}")
+            except Exception as exc:
+                self.result("static_maps.npy can be loaded", False, str(exc))
 
         stats_path = ROOT / "assets" / "stats.json"
         if not stats_path.is_file():
@@ -148,6 +191,10 @@ class VerificationSuite:
                         f"size={weights_path.stat().st_size} bytes")
             self.result("weights/monsoon_unet.pt is a binary file", is_binary and not is_lfs_pointer,
                         f"binary-content bytes in sample={non_text}")
+            weight_size = weights_path.stat().st_size
+            self.result("model weights are below the 5 MiB team target",
+                        weight_size < MAX_WEIGHT_BYTES,
+                        f"size={weight_size / (1024 * 1024):.2f} MiB; limit strictly below 5 MiB")
         except OSError as exc:
             self.result("weights file can be read", False, str(exc))
 
@@ -176,6 +223,53 @@ class VerificationSuite:
             ", ".join(forbidden[:5]) if forbidden else f"checked {len(tracked)} tracked paths",
         )
 
+    def check_repository_size(self) -> None:
+        """Check the deliverable size, excluding local data/env/cache and Git internals."""
+        ignored_dirs = {".git", ".venv", "venv", "env", "__pycache__", ".pytest_cache", "data"}
+        total = 0
+        count = 0
+        for path in ROOT.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(ROOT)
+            if any(part in ignored_dirs for part in relative.parts):
+                continue
+            try:
+                total += path.stat().st_size
+                count += 1
+            except OSError:
+                continue
+        self.result("deliverable working tree is strictly below 2 GB",
+                    total < MAX_REPO_BYTES,
+                    f"{total / (1024**3):.3f} GiB across {count} files (local data, environments and .git excluded)")
+
+    def check_dashboard_offline(self) -> None:
+        """Reject literal external URLs in the dashboard; localhost API calls are allowed."""
+        self.section("3. DASHBOARD OFFLINE-SAFETY SCAN")
+        dashboard = ROOT / "dashboard"
+        if not dashboard.is_dir():
+            self.result("dashboard directory exists", False, "dashboard/ is missing")
+            return
+        offenders: list[str] = []
+        url_pattern = re.compile(r"https?://[^\s\"'<>`)]+", re.IGNORECASE)
+        allowed_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+        for path in dashboard.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in {".html", ".js", ".css"}:
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                offenders.append(f"{path.relative_to(ROOT)}: cannot read ({exc})")
+                continue
+            for match in url_pattern.finditer(content):
+                url = match.group(0).rstrip(".,;]")
+                host = urllib.parse.urlparse(url).hostname
+                if host and host.lower() not in allowed_hosts:
+                    line = content.count("\n", 0, match.start()) + 1
+                    offenders.append(f"{path.relative_to(ROOT)}:{line} external URL {url}")
+        self.result("dashboard contains no literal external network URLs", not offenders,
+                    "; ".join(offenders[:8]) if offenders else "only local assets and localhost API references found")
+
     @staticmethod
     def _module_name_from_import(node: ast.AST) -> list[str]:
         names: list[str] = []
@@ -194,8 +288,9 @@ class VerificationSuite:
         banned_roots = {
             "requests", "httpx", "aiohttp", "urllib3", "socket", "ftplib",
             "paramiko", "boto3", "botocore", "selenium", "playwright", "curl_cffi",
+            "huggingface_hub",
         }
-        banned_exact = {"urllib.request"}
+        banned_exact = {"urllib.request", "urllib.error"}
         offenders: list[str] = []
 
         for path in ROOT.rglob("*.py"):
@@ -254,7 +349,7 @@ class VerificationSuite:
         except (ImportError, ModuleNotFoundError, ValueError):
             module_available = False
         if not module_available:
-            self.skip("official schema_validator", "monsoon_r1 tools are not installed in this environment")
+            self.skip("official schema_validator", "Install/restore the official monsoon_r1 kit and rerun", required=True)
             return
         command = [sys.executable, "-m", "monsoon_r1.schema_validator", self.base_url]
         code, output = self.run_command(command, timeout=180.0)
@@ -267,8 +362,10 @@ class VerificationSuite:
     def run_static_checks(self) -> None:
         self.section("3. STATIC ANTI-DISQUALIFICATION CHECKS")
         self.check_weights()
+        self.check_repository_size()
         self.tracked_data_archive_check()
         self.check_network_imports()
+        self.check_dashboard_offline()
 
     # ------------------------------------------------------------------
     # API request helpers and data generation
@@ -347,6 +444,9 @@ class VerificationSuite:
                 inference_valid = False
             self.result(f"{label}: inference_ms is a finite non-negative number",
                         inference_valid, f"inference_ms={inference_ms_raw!r}")
+            self.result(f"{label}: wall-clock response is below 5.0 seconds",
+                        wall_seconds < MAX_LATENCY_SECONDS,
+                        f"wall time={wall_seconds:.3f}s")
             return rollout, wall_seconds
         except (RuntimeError, ValueError, TypeError) as exc:
             self.result(label, False, str(exc))
@@ -405,8 +505,17 @@ class VerificationSuite:
         if rollout.shape == EXPECTED_OUTPUT_SHAPE and np.isfinite(rollout).all():
             self.baseline_rollout = rollout
         self.check_output_invariants("baseline output invariants", rollout)
+        if rollout.shape == EXPECTED_OUTPUT_SHAPE and np.isfinite(rollout).all():
+            min_tcwv = float(np.min(rollout[:, 5]))
+            if min_tcwv < 0.0:
+                self.warn("total column water vapour is physically non-negative",
+                          f"observed minimum tcwv={min_tcwv:.4f} kg/m²; consider clamping or constraining channel 5")
+            else:
+                self.result("total column water vapour is non-negative", True,
+                            f"minimum tcwv={min_tcwv:.4f} kg/m²")
         if wall is not None:
             self.result("baseline response completes", True, f"wall time={wall:.3f}s")
+        self.check_anti_blur()
 
         # Detect the exact starter implementation, which copies the last input day
         # into every forecast step. This is a diagnostic beyond shape validation.
@@ -417,6 +526,37 @@ class VerificationSuite:
         )
         self.result("forecast is not the exact repeat-yesterday placeholder", not is_persistence,
                     "all 10 days exactly repeat init_states[-1]" if is_persistence else "not an exact persistence copy")
+
+    def check_anti_blur(self) -> None:
+        """Compare Day-8 spatial variance with a real held-out Day-8 target."""
+        self.section("5A. DAY-8 ANTI-BLUR CHECK")
+        if self.baseline_rollout is None or self.reference_day8 is None:
+            self.skip("Day-8 spatial variance ratio (0.40–2.50 per channel)",
+                      "No real held-out reference found; supply data/india_climate_train.nc (not committed)",
+                      required=True)
+            return
+        ratios: list[float] = []
+        all_ok = True
+        names = CHANNELS
+        for channel, name in enumerate(names):
+            predicted = self.baseline_rollout[7, channel]
+            truth = self.reference_day8[channel]
+            true_var = float(np.var(truth))
+            pred_var = float(np.var(predicted))
+            if not math.isfinite(true_var) or true_var <= 1e-12:
+                all_ok = False
+                self.result(f"anti-blur variance ratio for {name}", False,
+                            f"reference spatial variance is invalid or too small: {true_var}")
+                continue
+            ratio = pred_var / true_var
+            ratios.append(ratio)
+            ok = 0.40 <= ratio <= 2.50
+            all_ok = all_ok and ok
+            self.result(f"anti-blur variance ratio for {name}", ok,
+                        f"predicted/reference spatial variance={ratio:.3f}; allowed 0.40–2.50")
+        self.result("all six Day-8 channels satisfy anti-blur variance limits",
+                    all_ok and len(ratios) == 6,
+                    "variance ratio checked against real held-out Day-8 fields")
 
     def check_zero_shock(self) -> None:
         self.section("6. ZERO-SHOCK BIT-EQUALITY")
@@ -494,6 +634,131 @@ class VerificationSuite:
             self.result("at least one shock has non-zero causal sensitivity", False,
                         "No valid extreme-shock response was available")
 
+    def check_input_history_usage(self) -> None:
+        """Diagnostic: report whether the two older input days affect forecasts."""
+        self.section("8. THREE-DAY INPUT HISTORY DIAGNOSTIC")
+        if self.initial_states is None or self.baseline_rollout is None:
+            self.skip("three-day history usage", "A valid baseline forecast is unavailable")
+            return
+        stats = json.loads((ROOT / "assets" / "stats.json").read_text(encoding="utf-8"))
+        temp_std = float(stats["std"][0])
+        for day_index in (0, 1):
+            changed = self.initial_states.copy()
+            changed[day_index, 0, 10:14, 18:22] += 0.5 * temp_std
+            output, _ = self.call_simulate(changed, None,
+                                           f"history day {day_index - 2} sensitivity request")
+            if output is None or output.shape != EXPECTED_OUTPUT_SHAPE or not np.isfinite(output).all():
+                self.warn(f"history day {day_index - 2} usage could not be measured",
+                          "the modified-history request returned an invalid forecast")
+                continue
+            difference = float(np.max(np.abs(output - self.baseline_rollout)))
+            if difference <= 1e-4:
+                self.warn(f"forecast does not respond to history day {day_index - 2}",
+                          "the current backend appears to use only init_states[-1]; notify Member 1")
+            else:
+                self.result(f"forecast responds to history day {day_index - 2}", True,
+                            f"max forecast difference={difference:.6g}")
+
+    @staticmethod
+    def _distance_from_region(region_mask: np.ndarray) -> np.ndarray:
+        rows, cols = np.where(region_mask)
+        if len(rows) == 0:
+            raise ValueError("shock region mask is empty")
+        row_min, row_max = int(rows.min()), int(rows.max())
+        col_min, col_max = int(cols.min()), int(cols.max())
+        grid_rows, grid_cols = np.indices((32, 36))
+        delta_rows = np.maximum(np.maximum(row_min - grid_rows, 0), grid_rows - row_max)
+        delta_cols = np.maximum(np.maximum(col_min - grid_cols, 0), grid_cols - col_max)
+        return np.sqrt(delta_rows.astype(np.float64) ** 2 + delta_cols.astype(np.float64) ** 2)
+
+    @staticmethod
+    def _radius_for_energy(distance: np.ndarray, energy: np.ndarray, fraction: float = 0.95) -> float:
+        flat_energy = energy.reshape(-1)
+        total = float(flat_energy.sum())
+        if total <= 1e-20:
+            return 0.0
+        order = np.argsort(distance.reshape(-1))
+        cumulative = np.cumsum(flat_energy[order])
+        position = min(int(np.searchsorted(cumulative, fraction * total, side="left")), len(order) - 1)
+        return float(distance.reshape(-1)[order[position]])
+
+    def check_contract_shock_causality(self) -> None:
+        """Exercise the two actual R1 shock definitions and spatial dynamics gates."""
+        self.section("9. CONTRACT SHOCK LOCALISATION AND PROPAGATION")
+        if (self.initial_states is None or self.baseline_rollout is None
+                or self.baseline_rollout.shape != EXPECTED_OUTPUT_SHAPE):
+            self.skip("contract shock causality", "A valid baseline forecast is unavailable")
+            return
+
+        latitudes = 6.5 + np.arange(32, dtype=np.float32)
+        longitudes = 65.5 + np.arange(36, dtype=np.float32)
+        bay_mask = ((latitudes[:, None] >= 8.0) & (latitudes[:, None] <= 20.0)
+                    & (longitudes[None, :] >= 82.0) & (longitudes[None, :] <= 94.0))
+        arabian_mask = ((latitudes[:, None] >= 8.0) & (latitudes[:, None] <= 20.0)
+                        & (longitudes[None, :] >= 65.0) & (longitudes[None, :] <= 75.0))
+
+        warm_ocean = np.zeros(EXPECTED_PERTURBATION_SHAPE, dtype=np.float32)
+        warm_ocean[0, bay_mask] = 3.0
+        warm_ocean[5, bay_mask] = 0.15 * self.initial_states[-1, 5, bay_mask]
+
+        monsoon_stall = np.zeros(EXPECTED_PERTURBATION_SHAPE, dtype=np.float32)
+        monsoon_stall[2, arabian_mask] = -0.40 * self.initial_states[-1, 2, arabian_mask]
+        monsoon_stall[3, arabian_mask] = -0.40 * self.initial_states[-1, 3, arabian_mask]
+
+        stats = json.loads((ROOT / "assets" / "stats.json").read_text(encoding="utf-8"))
+        channel_std = np.asarray(stats["std"], dtype=np.float64).reshape(1, 6, 1, 1)
+
+        for shock_name, perturbation, region in (
+            ("warm_ocean", warm_ocean, bay_mask),
+            ("monsoon_stall", monsoon_stall, arabian_mask),
+        ):
+            shocked, _ = self.call_simulate(self.initial_states, perturbation,
+                                            f"{shock_name} contract shock request")
+            if shocked is None or shocked.shape != EXPECTED_OUTPUT_SHAPE or not np.isfinite(shocked).all():
+                self.result(f"{shock_name}: causal spatial diagnostics", False,
+                            "shock forecast was invalid")
+                continue
+
+            response = (shocked.astype(np.float64) - self.baseline_rollout.astype(np.float64)) / channel_std
+            max_response_std = float(np.max(np.abs(response)))
+            self.result(f"{shock_name}: response stays within 5 channel standard deviations",
+                        max_response_std <= 5.0,
+                        f"maximum standardized response={max_response_std:.3f} std")
+
+            energy_by_day = np.square(response).sum(axis=1)
+            distance = self._distance_from_region(region)
+            day1_total = float(energy_by_day[0].sum())
+            if day1_total <= 1e-12:
+                self.result(f"{shock_name}: non-zero Day-1 response", False,
+                            "the shock produced no measurable Day-1 response")
+                continue
+
+            local_fraction = float(energy_by_day[0][distance <= 3.0].sum() / day1_total)
+            self.result(f"{shock_name}: at least 60% of Day-1 response energy within 3 cells",
+                        local_fraction >= 0.60,
+                        f"local response energy={local_fraction:.1%}")
+
+            day4_total = float(energy_by_day[3].sum())
+            day8_total = float(energy_by_day[7].sum())
+            day4_outer = (float(energy_by_day[3][distance > 3.0].sum() / day4_total)
+                          if day4_total > 1e-12 else 0.0)
+            day8_outer = (float(energy_by_day[7][distance > 3.0].sum() / day8_total)
+                          if day8_total > 1e-12 else 0.0)
+            spread_ok = day4_outer > 0.01 and day8_outer > 0.01
+            self.result(f"{shock_name}: measurable outward response by Days 4 and 8",
+                        spread_ok,
+                        f"energy outside 3-cell buffer: Day 4={day4_outer:.1%}, Day 8={day8_outer:.1%}")
+
+            r1 = self._radius_for_energy(distance, energy_by_day[0])
+            r4 = self._radius_for_energy(distance, energy_by_day[3])
+            r8 = self._radius_for_energy(distance, energy_by_day[7])
+            growth_1_to_4 = max(0.0, r4 - r1)
+            growth_4_to_8 = max(0.0, r8 - r4)
+            speed_ok = growth_1_to_4 <= 8.0 * 3.0 and growth_4_to_8 <= 8.0 * 4.0
+            self.result(f"{shock_name}: 95%-energy radius growth does not exceed 8 cells/day",
+                        speed_ok,
+                        f"r95 Day 1={r1:.1f}, Day 4={r4:.1f}, Day 8={r8:.1f}; growth={growth_1_to_4:.1f}/{growth_4_to_8:.1f} cells")
+
     # ------------------------------------------------------------------
     # Performance and optional memory checks
     # ------------------------------------------------------------------
@@ -538,7 +803,7 @@ class VerificationSuite:
         try:
             import psutil  # type: ignore
         except ImportError:
-            self.skip("server process RAM below 6 GB", "Install psutil for this optional check: python -m pip install psutil")
+            self.skip("server process RAM below 6 GB", "psutil is listed in requirements.txt; install project requirements", required=True)
             return
 
         try:
@@ -547,7 +812,7 @@ class VerificationSuite:
                 if connection.status == psutil.CONN_LISTEN and connection.laddr and connection.laddr.port == port and connection.pid:
                     listeners.append(connection.pid)
             if not listeners:
-                self.skip("server process RAM below 6 GB", "Could not identify the process listening on the requested port")
+                self.skip("server process RAM below 6 GB", "Could not identify the process listening on the requested port", required=True)
                 return
             measurements = []
             for pid in sorted(set(listeners)):
@@ -558,7 +823,49 @@ class VerificationSuite:
             detail = ", ".join(f"PID {pid}: {rss / 1024**3:.2f} GB" for pid, rss in measurements)
             self.result("server process RAM is below 6 GB", maximum < MAX_RAM_BYTES, detail)
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as exc:
-            self.skip("server process RAM below 6 GB", f"OS did not allow process inspection: {exc}")
+            self.skip("server process RAM below 6 GB", f"OS did not allow process inspection: {exc}", required=True)
+
+    def load_reference_validation_case(self) -> bool:
+        """Load one chronological validation window for real Day-8 anti-blur checks."""
+        if self.reference_dataset is None or not self.reference_dataset.is_file():
+            self.skip("real held-out validation sample", 
+                      f"dataset not found at {self.reference_dataset}; it must stay out of Git", required=True)
+            return False
+        try:
+            import xarray as xr
+            with xr.open_dataset(self.reference_dataset) as dataset:
+                if "data" not in dataset or "time" not in dataset:
+                    raise ValueError("NetCDF must contain 'data' and 'time' variables")
+                data_var = dataset["data"]
+                if data_var.ndim != 4 or tuple(data_var.shape[1:]) != (6, 32, 36):
+                    raise ValueError(f"data must have shape [N,6,32,36], got {data_var.shape}")
+                # Pick a chronological holdout window from the last two years.
+                last_input_index = TRAIN_DAYS + 20
+                if int(data_var.shape[0]) <= last_input_index + 8:
+                    raise ValueError("dataset is too short for the selected Day-8 validation target")
+                self.initial_states = np.asarray(
+                    data_var.isel(time=slice(last_input_index - 2, last_input_index + 1)).values,
+                    dtype=np.float32,
+                )
+                self.reference_day8 = np.asarray(
+                    data_var.isel(time=last_input_index + 8).values,
+                    dtype=np.float32,
+                )
+                doy_value = float(dataset["time"].dt.dayofyear.isel(time=last_input_index).values)
+                self.doy_sincos = [math.sin(2 * math.pi * doy_value / 365.0),
+                                   math.cos(2 * math.pi * doy_value / 365.0)]
+            valid = (self.initial_states.shape == EXPECTED_INPUT_SHAPE
+                     and self.reference_day8.shape == (6, 32, 36)
+                     and np.isfinite(self.initial_states).all()
+                     and np.isfinite(self.reference_day8).all())
+            if not valid:
+                raise ValueError("selected reference tensors have invalid shapes or non-finite values")
+            self.result("real held-out validation sample loaded", True,
+                        f"input shape={self.initial_states.shape}; Day-8 target shape={self.reference_day8.shape}")
+            return True
+        except Exception as exc:
+            self.skip("real held-out validation sample", f"could not load dataset: {exc}", required=True)
+            return False
 
     # ------------------------------------------------------------------
     # Main execution
@@ -574,24 +881,34 @@ class VerificationSuite:
         self.run_static_checks()
         self.check_health()
 
-        if stats is not None:
+        loaded_real_case = self.load_reference_validation_case()
+        if not loaded_real_case and stats is not None:
             self.initial_states = self.make_initial_states(stats)
 
         self.check_baseline_output()
         self.check_zero_shock()
         self.check_extreme_shocks_and_sensitivity()
+        self.check_contract_shock_causality()
+        self.check_input_history_usage()
         self.check_latency()
         self.check_server_memory_if_possible(port)
 
         self.section("FINAL RESULT")
-        print(f"PASS: {self.passed} | FAIL: {self.failed} | SKIP: {self.skipped}")
+        print(f"PASS: {self.passed} | FAIL: {self.failed} | WARN: {self.warnings} | SKIP: {self.skipped}")
         if self.failed:
             print("OVERALL: FAIL — fix the failed checks before submission.")
             print("Note: Wi-Fi-off/offline rehearsal must still be performed manually.")
             return 1
-        print("OVERALL: PASS — all executed checks passed.")
+        if self.required_skips:
+            print("OVERALL: INCOMPLETE — required checks were skipped; the repository is not fully verified.")
+            print("Restore the official monsoon_r1 validator and the local ignored training dataset, then rerun.")
+            print("Reminder: perform one final clean-clone test with Wi-Fi disabled.")
+            return 1
+        print("OVERALL: PASS — all required executed checks passed.")
         if self.skipped:
             print("Some optional checks were skipped; review the SKIP messages above.")
+        if self.warnings:
+            print("Review WARN messages; they are diagnostics, not automatic failures.")
         print("Reminder: perform one final clean-clone test with Wi-Fi disabled.")
         return 0
 
@@ -602,12 +919,17 @@ def main() -> int:
                         help="Base URL of the running serve.py API (default: http://localhost:8000)")
     parser.add_argument("--timeout", type=float, default=30.0,
                         help="HTTP timeout in seconds for each API request (default: 30)")
+    parser.add_argument("--reference-dataset", default="data/india_climate_train.nc",
+                        help="Path to local ignored NetCDF dataset for a real Day-8 anti-blur check")
     args = parser.parse_args()
 
     if args.timeout <= 0:
         parser.error("--timeout must be greater than zero")
 
-    suite = VerificationSuite(args.url, timeout=args.timeout)
+    reference_path = Path(args.reference_dataset)
+    if not reference_path.is_absolute():
+        reference_path = ROOT / reference_path
+    suite = VerificationSuite(args.url, timeout=args.timeout, reference_dataset=reference_path)
     try:
         return suite.run(port=urllib.parse.urlparse(args.url).port or 80)
     except KeyboardInterrupt:
