@@ -3,102 +3,174 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <title>Multiverse of Monsoon</title>
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#07131f">
+  <title>Monsoon Intelligence · Multiverse</title>
   <link rel="stylesheet" href="style.css">
   <script src="vendor/three.global.js" defer></script>
+  <script src="static-map-data.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
-  <header class="masthead">
-    <div>
-      <p class="eyebrow">YUGAANTAR DEVFORGE · TRACK 2</p>
-      <h1>Multiverse of Monsoon</h1>
-      <p class="subtitle">Explore a baseline forecast, apply a weather shock, and compare the two futures.</p>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="#overview" aria-label="Monsoon Intelligence home">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-copy"><strong>MONSOON<span>/</span>INTEL</strong><small>YUGAANTAR DEVFORGE · TRACK 02</small></span>
+    </a>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a class="active" href="#overview">Command</a>
+      <a href="#multiverse">Multiverse</a>
+      <a href="#risk">Kharif risk</a>
+    </nav>
+    <div class="top-status">
+      <span class="local-chip"><span></span> OFFLINE-READY</span>
+      <div id="connection" class="connection" role="status" aria-live="polite"><span class="status-light"></span><span>Connecting to local model</span></div>
     </div>
-    <div id="connection" class="connection" role="status" aria-live="polite">Connecting to local model…</div>
   </header>
 
-  <main>
-    <section class="controls panel" aria-label="Forecast controls">
-      <div class="control-row">
-        <label class="field">Variable
+  <main id="overview">
+    <section class="hero-shell">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="eyebrow-line"></span> INDIA · ATMOSPHERIC INTELLIGENCE</p>
+        <h1>One monsoon.<br><em>Many possible futures.</em></h1>
+        <p class="hero-description">Explore a ten-day forecast, perturb the atmosphere, and see how the monsoon responds across India.</p>
+        <div class="hero-tags">
+          <span class="live-tag"><span class="pulse-dot"></span> LOCAL MODEL</span>
+          <span class="tag-divider"></span>
+          <span>32 × 36 SPATIAL GRID</span>
+          <span class="tag-divider"></span>
+          <span>10-DAY HORIZON</span>
+        </div>
+      </div>
+      <div class="hero-orbit" aria-hidden="true">
+        <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit-core">IN<span>·</span></div>
+        <span class="orbit-label orbit-label-a">78.9° E</span><span class="orbit-label orbit-label-b">20.6° N</span>
+      </div>
+    </section>
+
+    <section class="summary-grid" aria-label="Selected-day forecast summary">
+      <article class="summary-card summary-primary">
+        <div class="summary-top"><span class="summary-icon rain-icon">↟</span><span class="summary-label">PEAK PRECIPITATION</span><span class="summary-index">01</span></div>
+        <strong id="summary-rain">—</strong><span class="summary-unit">mm/day · selected day</span>
+      </article>
+      <article class="summary-card">
+        <div class="summary-top"><span class="summary-icon heat-icon">◌</span><span class="summary-label">HEAT STRESS CELLS</span><span class="summary-index">02</span></div>
+        <strong id="summary-heat">—</strong><span class="summary-unit">t₂m above 40 °C</span>
+      </article>
+      <article class="summary-card">
+        <div class="summary-top"><span class="summary-icon delta-icon">↗</span><span class="summary-label">SCENARIO RESPONSE</span><span class="summary-index">03</span></div>
+        <strong id="summary-delta">—</strong><span class="summary-unit">largest absolute delta</span>
+      </article>
+      <article class="summary-card summary-region">
+        <div class="summary-top"><span class="summary-icon region-icon">⌖</span><span class="summary-label">ACTIVE REGION</span><span class="summary-index">04</span></div>
+        <strong id="summary-region">All India</strong><span id="summary-region-cells" class="summary-unit">32 × 36 model grid</span>
+      </article>
+    </section>
+
+    <section class="control-deck" id="forecast" aria-label="Forecast controls">
+      <div class="control-heading">
+        <div><p class="eyebrow">FORECAST CONTROLS</p><h2>Set the atmosphere</h2></div>
+        <span class="sample-badge" id="sample-badge"><span class="sample-dot"></span>SYNTHETIC INITIAL STATE</span>
+      </div>
+      <div class="control-grid">
+        <label class="control-field">FIELD
           <select id="variable">
-            <option value="tp">Rain · tp (mm/day)</option>
-            <option value="t2m">Temperature · t2m (K)</option>
-            <option value="wind">Wind speed · u10/v10 (m/s)</option>
-            <option value="msl">Sea-level pressure · msl (Pa)</option>
-            <option value="tcwv">Water vapour · tcwv (kg/m²)</option>
+            <option value="tp">Precipitation · tp</option>
+            <option value="t2m">Air temperature · t2m</option>
+            <option value="wind">Wind speed · u10 / v10</option>
+            <option value="msl">Sea-level pressure · msl</option>
+            <option value="tcwv">Column water vapour · tcwv</option>
           </select>
         </label>
-        <div class="timeline field">
-          <label for="day">Forecast day <strong id="day-label">Day 1</strong></label>
+        <label class="control-field">REGION FOCUS
+          <select id="region">
+            <option value="all">All India</option>
+            <option value="west">Western coast</option>
+            <option value="gangetic">Indo-Gangetic plain</option>
+            <option value="bay">Bay of Bengal</option>
+            <option value="deccan">Deccan plateau</option>
+          </select>
+        </label>
+        <div class="timeline-control">
+          <div class="timeline-head"><label for="day">FORECAST DAY</label><strong id="day-label">DAY 01 <span>·</span> 10</strong></div>
           <div class="timeline-row">
-            <input id="day" type="range" min="1" max="10" value="1" step="1">
-            <button id="play" class="button quiet" type="button">Play</button>
+            <input id="day" type="range" min="1" max="10" value="1" step="1" aria-label="Forecast day">
+            <button id="play" class="icon-button" type="button" aria-label="Play forecast timeline">▶</button>
           </div>
+          <div class="day-ticks" aria-hidden="true"><span>01</span><span>02</span><span>03</span><span>04</span><span>05</span><span>06</span><span>07</span><span>08</span><span>09</span><span>10</span></div>
         </div>
-        <button id="refresh" class="button primary" type="button">Run forecast</button>
+        <button id="refresh" class="run-button" type="button"><span>↻</span> RUN FORECAST</button>
       </div>
-      <div class="control-row shock-row">
-        <div class="field preset-field">
-          <span class="label">Preset shock</span>
-          <div class="button-group">
-            <button class="button preset" data-preset="warm" type="button">Warm Bay of Bengal +2 K</button>
-            <button class="button preset" data-preset="arabian" type="button">Weaken Arabian Sea winds −3 m/s</button>
-            <button class="button preset" data-preset="el-nino" type="button">El Niño heat dome</button>
-            <button id="clear-shock" class="button quiet" type="button">Clear shock</button>
-          </div>
-        </div>
-        <div class="field painter">
-          <label for="shock-size">Map shock · click any map</label>
-          <div class="painter-row">
-            <input id="shock-size" type="number" value="2" step="0.5" aria-label="Shock amount">
-            <span id="shock-unit">mm/day</span>
-            <span class="hint">Adds to the selected variable</span>
-          </div>
-        </div>
-      </div>
-      <p id="shock-status" class="status-note">No shock applied. Map clicks paint a local perturbation.</p>
+      <div class="unit-readout"><span class="unit-swatch"></span><span id="map-variable-label">PRECIPITATION</span><span class="unit-separator">/</span><strong id="map-units-label">mm/day</strong><span class="unit-note">PHYSICAL UNITS · UNNORMALIZED</span></div>
     </section>
 
-    <section id="error" class="error panel" hidden role="alert"></section>
+    <section id="error" class="error" hidden role="alert"></section>
 
-    <p class="map-instructions">Interactive 3D maps · drag to orbit, scroll to zoom, click a grid cell to paint a shock.</p>
-
-    <section class="maps" aria-label="Forecast maps">
-      <article class="map-card panel">
-        <div class="map-heading"><div><p class="eyebrow">TIMELINE PRIME</p><h2>Baseline</h2></div><span class="map-index">A</span></div>
-        <canvas id="map-base" width="720" height="640" aria-label="Interactive 3D baseline forecast map, drag to orbit, scroll to zoom, click to paint a shock"></canvas>
-        <div class="map-scale"><span id="base-min">—</span><span class="gradient"></span><span id="base-max">—</span></div>
-      </article>
-      <article class="map-card panel">
-        <div class="map-heading"><div><p class="eyebrow">MULTIVERSE BRANCH</p><h2>Shock scenario</h2></div><span class="map-index">B</span></div>
-        <canvas id="map-shock" width="720" height="640" aria-label="Interactive 3D shock forecast map, drag to orbit, scroll to zoom, click to paint a shock"></canvas>
-        <div class="map-scale"><span id="shock-min">—</span><span class="gradient"></span><span id="shock-max">—</span></div>
-      </article>
-      <article class="map-card panel">
-        <div class="map-heading"><div><p class="eyebrow">DELTA ANOMALY</p><h2>Scenario − baseline</h2></div><span class="map-index">C</span></div>
-        <canvas id="map-delta" width="720" height="640" aria-label="Interactive 3D difference map between shock scenario and baseline, drag to orbit, scroll to zoom, click to paint a shock"></canvas>
-        <div class="map-scale"><span id="delta-min">−</span><span class="gradient diverging"></span><span id="delta-max">+</span></div>
-      </article>
+    <section id="multiverse" class="map-section">
+      <div class="section-head">
+        <div><p class="eyebrow">SCENARIO LAB · 01 / 03</p><h2>Read the monsoon terrain</h2><p class="section-description">Compare the reference forecast with a perturbed branch and its cell-by-cell response.</p></div>
+        <div class="map-meta"><span class="map-meta-dot"></span><span>MODEL RELIEF · SCHEMATIC OUTLINE</span><span class="map-meta-divider"></span><span>DRAG TO ORBIT · SCROLL TO ZOOM</span></div>
+      </div>
+      <p id="map-instructions" class="map-instructions">Interactive 3D field · drag to orbit, scroll to zoom, hover to inspect, click a grid cell to paint a shock.</p>
+      <div class="maps" aria-label="Baseline and shock comparison maps">
+        <article class="map-card map-baseline">
+          <div class="map-heading"><div class="map-title-group"><span class="map-index">A</span><div><p class="map-kicker">REFERENCE RUN</p><h3>Baseline</h3></div></div><span class="scenario-chip">NO SHOCK</span></div>
+          <div class="map-stage"><canvas id="map-base" width="720" height="540" aria-label="Interactive baseline 3D map. Drag to orbit, scroll to zoom, hover to inspect, click a cell to paint a shock."></canvas><div class="map-readout" id="hover-base" aria-live="polite">Hover a cell to inspect</div></div>
+          <div class="map-scale"><span id="base-min">—</span><span class="gradient"></span><span id="base-max">—</span></div>
+        </article>
+        <article class="map-card map-shocked">
+          <div class="map-heading"><div class="map-title-group"><span class="map-index">B</span><div><p class="map-kicker">COUNTERFACTUAL BRANCH</p><h3>Shock scenario</h3></div></div><span class="scenario-chip scenario-chip-cyan">PERTURBED</span></div>
+          <div class="map-stage"><canvas id="map-shock" width="720" height="540" aria-label="Interactive shock scenario 3D map. Drag to orbit, scroll to zoom, hover to inspect, click a cell to paint a shock."></canvas><div class="map-readout" id="hover-shock" aria-live="polite">Hover a cell to inspect</div></div>
+          <div class="map-scale"><span id="shock-min">—</span><span class="gradient"></span><span id="shock-max">—</span></div>
+        </article>
+        <article class="map-card map-difference">
+          <div class="map-heading"><div class="map-title-group"><span class="map-index">C</span><div><p class="map-kicker">CAUSAL RESPONSE</p><h3>Scenario − baseline</h3></div></div><span class="scenario-chip scenario-chip-violet">Δ FIELD</span></div>
+          <div class="map-stage"><canvas id="map-delta" width="720" height="540" aria-label="Interactive 3D difference map. Drag to orbit, scroll to zoom, hover to inspect, click a cell to paint a shock."></canvas><div class="map-readout" id="hover-delta" aria-live="polite">Hover a cell to inspect</div></div>
+          <div class="map-scale"><span id="delta-min">−</span><span class="gradient diverging"></span><span id="delta-max">+</span></div>
+        </article>
+      </div>
+      <p class="boundary-note">Terrain uses the model’s bundled static elevation grid. The India outline is schematic for orientation only; no state or administrative borders are implied.</p>
     </section>
 
-    <section class="impact panel">
-      <div class="impact-intro">
-        <p class="eyebrow">DECISION SUPPORT · SHOCK SCENARIO</p>
-        <h2>Impact alerts</h2>
-        <p>Counts use physical-unit forecast values. Rain and heat alerts show the selected day; drought uses the full 10-day branch.</p>
+    <section class="shock-lab" aria-label="Counterfactual shock controls">
+      <div class="shock-copy"><p class="eyebrow">MULTIVERSE SIMULATOR · 02 / 03</p><h2>Change one condition.<br><em>Explore another future.</em></h2><p>Each branch starts from the same initial state. A zero shock reproduces the baseline.</p><div id="shock-status" class="shock-status" role="status" aria-live="polite">No shock applied. Click a map cell or choose a preset.</div></div>
+      <div class="shock-controls">
+        <div class="preset-head"><span>PRESET EXPERIMENTS</span><span class="preset-caption">PHYSICAL-UNIT DELTAS</span></div>
+        <div class="preset-grid">
+          <button class="preset-button" data-preset="warm" type="button"><span class="preset-number">01</span><span><strong>Warm Bay of Bengal</strong><small>+2 K · 8–20°N, 82–94°E</small></span><span class="preset-arrow">↗</span></button>
+          <button class="preset-button" data-preset="arabian" type="button"><span class="preset-number">02</span><span><strong>Weaken Arabian winds</strong><small>−3 m/s · 8–20°N, 65–75°E</small></span><span class="preset-arrow">↗</span></button>
+          <button class="preset-button" data-preset="el-nino" type="button"><span class="preset-number">03</span><span><strong>El Niño heat dome</strong><small>+2 K · central India</small></span><span class="preset-arrow">↗</span></button>
+        </div>
+        <div class="custom-shock">
+          <label for="shock-size">MAP PAINT AMOUNT</label>
+          <div class="paint-input"><input id="shock-size" type="number" value="2" step="0.5" aria-label="Map perturbation amount"><span id="shock-unit">mm/day</span><small>Click any map cell to apply</small></div>
+          <button id="clear-shock" class="clear-button" type="button">CLEAR SHOCK <span>×</span></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="risk" class="risk-section">
+      <div class="section-head risk-head">
+        <div><p class="eyebrow">KHARIF RISK INTELLIGENCE · 03 / 03</p><h2>Signals across the season</h2><p class="section-description">Transparent prototype thresholds applied to the selected shock branch.</p></div>
+        <span class="prototype-badge"><span></span> PROTOTYPE ALERTS · NOT OFFICIAL WARNINGS</span>
       </div>
       <div class="risk-grid" aria-live="polite">
-        <div class="risk"><span class="risk-dot heat"></span><span>Heatwave cells <small>t2m &gt; 313.15 K</small></span><strong id="heat-count">—</strong></div>
-        <div class="risk"><span class="risk-dot rain"></span><span>Heavy-rain only cells <small>64.5 &lt; tp ≤ 115.5 mm/day</small></span><strong id="rain-count">—</strong></div>
-        <div class="risk"><span class="risk-dot cloud"></span><span>Cloudburst cells <small>tp &gt; 115.5 mm/day</small></span><strong id="cloud-count">—</strong></div>
-        <div class="risk"><span class="risk-dot drought"></span><span>Kharif drought stress <small>10-day tp &lt; 25 mm and mean t2m &gt; 308.15 K</small></span><strong id="drought-count">—</strong></div>
+        <article class="risk-card risk-heat"><div class="risk-card-head"><span class="risk-symbol">°</span><span>HEATWAVE</span><span class="risk-index">01</span></div><strong id="heat-count">—</strong><div class="risk-card-bottom"><span>cells flagged</span><code>t₂m &gt; 313.15 K</code></div></article>
+        <article class="risk-card risk-rain"><div class="risk-card-head"><span class="risk-symbol">≈</span><span>HEAVY RAIN · FLOOD RISK</span><span class="risk-index">02</span></div><strong id="rain-count">—</strong><div class="risk-card-bottom"><span>cells flagged</span><code>64.5 &lt; tp ≤ 115.5</code></div></article>
+        <article class="risk-card risk-cloud"><div class="risk-card-head"><span class="risk-symbol">↯</span><span>CLOUDBURST</span><span class="risk-index">03</span></div><strong id="cloud-count">—</strong><div class="risk-card-bottom"><span>cells flagged</span><code>tp &gt; 115.5 mm/day</code></div></article>
+        <article class="risk-card risk-drought"><div class="risk-card-head"><span class="risk-symbol">◒</span><span>KHARIF DROUGHT STRESS</span><span class="risk-index">04</span></div><strong id="drought-count">—</strong><div class="risk-card-bottom"><span>cells · 10-day window</span><code>tp &lt; 25 mm · mean t₂m &gt; 308.15 K</code></div></article>
       </div>
-      <p class="disclaimer">Prototype indicators only; they are not official IMD warnings. Synthetic sample inputs are used until connected to a real three-day initial state.</p>
+      <div class="regional-panel">
+        <div class="regional-heading"><div><p class="eyebrow">REGIONAL WATCH</p><h3 id="active-region-name">All India</h3></div><span id="regional-status" class="regional-status">WAITING FOR FORECAST</span></div>
+        <div id="regional-summary" class="regional-summary" aria-live="polite"><div class="region-empty">Run a forecast to populate regional summaries.</div></div>
+      </div>
+      <p class="synthetic-note"><span class="sample-dot"></span><strong>DEMO INPUT:</strong> The initial weather state is synthetic and spatially uniform. Risk counts and maps illustrate model behavior; they are not observations, advisories, or current forecasts.</p>
     </section>
   </main>
-  <footer>Local offline interface · API: <code>http://localhost:8000/simulate</code> · grid 32 × 36</footer>
+
+  <footer class="footer"><span>MONSOON/INTEL</span><span>LOCAL INFERENCE · NO EXTERNAL RUNTIME REQUESTS</span><span>32 × 36 GRID · 6 PHYSICAL CHANNELS</span></footer>
 </body>
 </html>
