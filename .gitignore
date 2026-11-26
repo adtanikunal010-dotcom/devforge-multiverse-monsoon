@@ -1,0 +1,9 @@
+data/
+*.nc
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+monsoon_r1/
+/tmp
