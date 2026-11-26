@@ -1,14 +1,21 @@
-"""Starter server for Round 1. This is API plumbing only: `simulate()` below is a placeholder (it repeats the last day).
-Replace it with YOUR model. The judge runs this exact file in an offline container:  python serve.py --port 8000
-
-Rules: listen on 0.0.0.0 (not 127.0.0.1), load weights from files next to this one (there is no internet), keep
-the model loaded in memory (a 10-step rollout must return in under 5 s), return finite numbers in physical units.
-"""
+"""Round 1 inference server backed by trained MonsoonResUNet (offline CPU)."""
 import argparse
+import json
+import math
+from pathlib import Path
+
 import numpy as np
+import torch
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+from train.model import MonsoonResUNet, rollout_10_days
+
+ROOT = Path(__file__).resolve().parent
+WEIGHTS_PATH = ROOT / "weights" / "monsoon_unet.pt"
+STATS_PATH = ROOT / "assets" / "stats.json"
+STATIC_PATH = ROOT / "assets" / "static_maps.npy"
 
 app = FastAPI()
 app.add_middleware(
@@ -17,8 +24,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-MODEL_NAME = "placeholder-persistence"
-# TODO load your weights here, once, at import time, e.g. model = torch.load(Path(__file__).parent / "weights.pt")
+MODEL_NAME = "monsoon-resunet"
+
+with open(STATS_PATH, "r", encoding="utf-8") as _f:
+    _STATS = json.load(_f)
+_STATIC_MAPS = np.load(STATIC_PATH).astype("f4")
+
+_CKPT = torch.load(WEIGHTS_PATH, map_location="cpu", weights_only=False)
+_MODEL_CFG = _CKPT.get("model_config", {"in_channels": 9, "out_channels": 6, "base_ch": 32})
+_MODEL = MonsoonResUNet(**_MODEL_CFG)
+_MODEL.load_state_dict(_CKPT["model_state_dict"])
+_MODEL.to("cpu")
+_MODEL.eval()
 
 
 def _arr(x):
@@ -29,13 +46,34 @@ def _arr(x):
     return np.asarray(x, dtype="f4")
 
 
+def _doy_from_sincos(doy_sincos) -> float:
+    """Recover day-of-year in [0, 365) from [sin(2*pi*doy/365), cos(2*pi*doy/365)]."""
+    sin_v, cos_v = float(doy_sincos[0]), float(doy_sincos[1])
+    angle = math.atan2(sin_v, cos_v)
+    if angle < 0.0:
+        angle += 2.0 * math.pi
+    return (angle / (2.0 * math.pi)) * 365.0
+
+
 def simulate(init_states: np.ndarray, doy_sincos, steps: int, perturbation) -> np.ndarray:
     """init_states [3,6,32,36] physical units, oldest first. perturbation [6,32,36] delta or None.
     Return [steps,6,32,36] physical units. doy_sincos = [sin, cos] of the day of year of init_states[-1]."""
-    last = init_states[-1].copy()
-    if perturbation is not None:
-        last = last + perturbation                     # the shock is added to the last input day before simulating
-    return np.repeat(last[None], steps, axis=0)        # PLACEHOLDER: replace with your model
+    x0 = init_states[-1].astype("f4", copy=True)
+    if perturbation is not None and np.any(perturbation != 0.0):
+        x0 = x0 + perturbation.astype("f4", copy=False)
+
+    if not np.all(np.isfinite(x0)):
+        x0 = np.nan_to_num(x0, nan=0.0, posinf=0.0, neginf=0.0)
+
+    doy = _doy_from_sincos(doy_sincos)
+    with torch.no_grad():
+        out_t = rollout_10_days(_MODEL, x0, _STATIC_MAPS, _STATS, doy, steps=steps)
+
+    out = out_t.cpu().numpy().astype("f4", copy=False)
+    if not np.all(np.isfinite(out)):
+        out = np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+    out[:, 1] = np.maximum(out[:, 1], 0.0)
+    return out
 
 
 @app.post("/health")
@@ -53,5 +91,8 @@ async def simulate_endpoint(request: Request):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(); ap.add_argument("--port", type=int, default=8000)
-    uvicorn.run(app, host="0.0.0.0", port=ap.parse_args().port, log_level="warning")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--host", type=str, default="0.0.0.0")
+    ap.add_argument("--port", type=int, default=8000)
+    args = ap.parse_args()
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
