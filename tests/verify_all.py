@@ -40,7 +40,7 @@ MAX_LATENCY_SECONDS = 5.0
 MAX_RAM_BYTES = 6 * 1024**3
 MAX_REPO_BYTES = 2 * 1024**3
 MAX_WEIGHT_BYTES = 5 * 1024**2
-TRAIN_DAYS = 5479  # First 15 years (2005-2019), per training split.
+TRAIN_DAYS = 5478  # First 15 years (2005-2019), per training split.
 
 
 class VerificationSuite:

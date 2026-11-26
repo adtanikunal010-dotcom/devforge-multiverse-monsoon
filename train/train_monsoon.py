@@ -22,7 +22,7 @@ DATA_PATH = ROOT / "data" / "india_climate_train.nc"
 STATS_PATH = ROOT / "assets" / "stats.json"
 CKPT_PATH = ROOT / "weights" / "monsoon_unet.pt"
 
-TRAIN_DAYS = 5479  # First 15 years (2005-01-01 .. 2019-12-31)
+TRAIN_DAYS = 5478  # First 15 years (2005-01-01 .. 2019-12-31)
 ROLLOUT_TRAIN_STEPS = 3
 BATCH_SIZE = 64
 EPOCHS = 25
@@ -130,7 +130,7 @@ def evaluate_10day_rmse(
     pers_arr = np.concatenate(pers_all, axis=0)
 
     channels = stats["channels"]
-    for lead in (1, 5, 10):
+    for lead in (1, 4, 8):
         idx = lead - 1
         model_rmse = np.sqrt(np.mean((preds_arr[:, idx] - targets_arr[:, idx]) ** 2, axis=(0, 2, 3)))
         pers_rmse = np.sqrt(np.mean((pers_arr[:, idx] - targets_arr[:, idx]) ** 2, axis=(0, 2, 3)))
