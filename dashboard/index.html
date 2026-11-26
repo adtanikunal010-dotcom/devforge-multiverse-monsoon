@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>Multiverse of Monsoon</title>
   <link rel="stylesheet" href="style.css">
+  <script src="vendor/three.global.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -63,20 +64,22 @@
 
     <section id="error" class="error panel" hidden role="alert"></section>
 
+    <p class="map-instructions">Interactive 3D maps · drag to orbit, scroll to zoom, click a grid cell to paint a shock.</p>
+
     <section class="maps" aria-label="Forecast maps">
       <article class="map-card panel">
         <div class="map-heading"><div><p class="eyebrow">TIMELINE PRIME</p><h2>Baseline</h2></div><span class="map-index">A</span></div>
-        <canvas id="map-base" width="720" height="640" aria-label="Baseline forecast map, click to paint a shock"></canvas>
+        <canvas id="map-base" width="720" height="640" aria-label="Interactive 3D baseline forecast map, drag to orbit, scroll to zoom, click to paint a shock"></canvas>
         <div class="map-scale"><span id="base-min">—</span><span class="gradient"></span><span id="base-max">—</span></div>
       </article>
       <article class="map-card panel">
         <div class="map-heading"><div><p class="eyebrow">MULTIVERSE BRANCH</p><h2>Shock scenario</h2></div><span class="map-index">B</span></div>
-        <canvas id="map-shock" width="720" height="640" aria-label="Shock scenario forecast map, click to paint a shock"></canvas>
+        <canvas id="map-shock" width="720" height="640" aria-label="Interactive 3D shock forecast map, drag to orbit, scroll to zoom, click to paint a shock"></canvas>
         <div class="map-scale"><span id="shock-min">—</span><span class="gradient"></span><span id="shock-max">—</span></div>
       </article>
       <article class="map-card panel">
         <div class="map-heading"><div><p class="eyebrow">DELTA ANOMALY</p><h2>Scenario − baseline</h2></div><span class="map-index">C</span></div>
-        <canvas id="map-delta" width="720" height="640" aria-label="Difference map between shock scenario and baseline, click to paint a shock"></canvas>
+        <canvas id="map-delta" width="720" height="640" aria-label="Interactive 3D difference map between shock scenario and baseline, drag to orbit, scroll to zoom, click to paint a shock"></canvas>
         <div class="map-scale"><span id="delta-min">−</span><span class="gradient diverging"></span><span id="delta-max">+</span></div>
       </article>
     </section>

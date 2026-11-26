@@ -6,6 +6,17 @@
   const CHANNELS = { t2m: 0, tp: 1, u10: 2, v10: 3, msl: 4, tcwv: 5 };
   const API = "http://localhost:8000";
   const sample = [300, 5, 4, 2, 100800, 45];
+  const MAP_WIDTH = 10.4;
+  const MAP_DEPTH = 8.9;
+  const INDIA_OUTLINE = [
+    [68.1, 23.8], [69.2, 22.2], [70.1, 20.8], [72.1, 19.0], [72.8, 16.4],
+    [73.5, 13.6], [75.0, 10.7], [76.8, 8.1], [78.0, 9.0], [79.7, 10.7],
+    [81.0, 13.0], [82.0, 15.1], [84.1, 16.2], [86.8, 18.3], [88.0, 21.0],
+    [89.6, 22.1], [92.0, 23.8], [94.2, 26.1], [92.0, 27.3], [89.4, 28.1],
+    [86.8, 28.3], [84.4, 29.6], [82.5, 30.6], [80.7, 31.8], [78.9, 34.1],
+    [77.3, 36.9], [75.4, 34.7], [73.9, 32.5], [72.2, 30.8], [70.9, 28.6],
+    [69.3, 26.3], [68.1, 23.8],
+  ];
   const ui = {
     connection: document.querySelector("#connection"),
     variable: document.querySelector("#variable"),
@@ -28,6 +39,7 @@
   let playTimer = null;
   let repaintTimer = null;
   let activePreset = "none";
+  const mapViews = {};
 
   function zeroShock() {
     return Array.from({ length: 6 }, () => Array.from({ length: H }, () => Array(W).fill(0)));
@@ -151,18 +163,9 @@
 
   function strokeIndia(ctx, width, height) {
     // Simplified outline for geographic orientation; it is not a boundary dataset.
-    const outline = [
-      [68.1, 23.8], [69.2, 22.2], [70.1, 20.8], [72.1, 19.0], [72.8, 16.4],
-      [73.5, 13.6], [75.0, 10.7], [76.8, 8.1], [78.0, 9.0], [79.7, 10.7],
-      [81.0, 13.0], [82.0, 15.1], [84.1, 16.2], [86.8, 18.3], [88.0, 21.0],
-      [89.6, 22.1], [92.0, 23.8], [94.2, 26.1], [92.0, 27.3], [89.4, 28.1],
-      [86.8, 28.3], [84.4, 29.6], [82.5, 30.6], [80.7, 31.8], [78.9, 34.1],
-      [77.3, 36.9], [75.4, 34.7], [73.9, 32.5], [72.2, 30.8], [70.9, 28.6],
-      [69.3, 26.3], [68.1, 23.8],
-    ];
     ctx.save();
     ctx.beginPath();
-    outline.forEach(([lon, lat], index) => {
+    INDIA_OUTLINE.forEach(([lon, lat], index) => {
       const x = (lon - 65.5) / 35 * width;
       const y = (37.5 - lat) / 31 * height;
       if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
@@ -201,6 +204,175 @@
     strokeIndia(ctx, canvas.width, canvas.height);
   }
 
+  function ThreeMapView(canvas) {
+    const T = window.THREE;
+    this.canvas = canvas;
+    this.scene = new T.Scene();
+    this.scene.background = new T.Color("#e8eff0");
+    this.camera = new T.PerspectiveCamera(34, 1, 0.1, 80);
+    this.target = new T.Vector3(0, 0.42, 0);
+    this.camera.position.set(0, 8.5, 11.8);
+    this.camera.lookAt(this.target);
+    this.renderer = new T.WebGLRenderer({ canvas, antialias: true, powerPreference: "low-power" });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setClearColor("#e8eff0", 1);
+
+    this.scene.add(new T.HemisphereLight(0xf4fbff, 0x62717d, 2.1));
+    const sun = new T.DirectionalLight(0xffffff, 2.2);
+    sun.position.set(-4, 10, 7);
+    this.scene.add(sun);
+
+    const floor = new T.Mesh(
+      new T.PlaneGeometry(MAP_WIDTH + 0.45, MAP_DEPTH + 0.45),
+      new T.MeshStandardMaterial({ color: 0xd5e0e1, roughness: 1 })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -0.08;
+    this.scene.add(floor);
+
+    const cellWidth = MAP_WIDTH / W;
+    const cellDepth = MAP_DEPTH / H;
+    const cellGeometry = new T.BoxGeometry(cellWidth * 0.94, 1, cellDepth * 0.94);
+    const cellMaterial = new T.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.78,
+      metalness: 0,
+      vertexColors: false,
+    });
+    this.surface = new T.InstancedMesh(cellGeometry, cellMaterial, H * W);
+    this.surface.instanceMatrix.setUsage(T.DynamicDrawUsage);
+    this.scene.add(this.surface);
+
+    const outlinePoints = INDIA_OUTLINE.map(([lon, lat]) => new T.Vector3(
+      ((lon - 65.5) / (W - 1) - 0.5) * MAP_WIDTH,
+      1.55,
+      ((37.5 - lat) / (H - 1) - 0.5) * MAP_DEPTH
+    ));
+    const outline = new T.LineLoop(
+      new T.BufferGeometry().setFromPoints(outlinePoints),
+      new T.LineBasicMaterial({ color: 0x18344d, transparent: true, opacity: 0.82 })
+    );
+    this.scene.add(outline);
+
+    this.raycaster = new T.Raycaster();
+    this.pointer = new T.Vector2();
+    this.drag = null;
+    this.onPaint = null;
+    this.resize = () => {
+      const rect = this.canvas.getBoundingClientRect();
+      const width = Math.max(1, Math.round(rect.width));
+      const height = Math.max(1, Math.round(rect.height));
+      this.renderer.setSize(width, height, false);
+      this.camera.aspect = width / height;
+      this.camera.updateProjectionMatrix();
+      this.render();
+    };
+    this.render = () => this.renderer.render(this.scene, this.camera);
+
+    this.canvas.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
+      this.drag = { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, moved: 0 };
+      this.canvas.setPointerCapture(event.pointerId);
+      this.canvas.style.cursor = "grabbing";
+    });
+    this.canvas.addEventListener("pointermove", event => {
+      if (!this.drag) return;
+      const dx = event.clientX - this.drag.lastX;
+      const dy = event.clientY - this.drag.lastY;
+      this.drag.lastX = event.clientX;
+      this.drag.lastY = event.clientY;
+      this.drag.moved += Math.abs(dx) + Math.abs(dy);
+      if (this.drag.moved > 3) {
+        const offset = this.camera.position.clone().sub(this.target);
+        const spherical = new T.Spherical().setFromVector3(offset);
+        spherical.theta -= dx * 0.008;
+        spherical.phi = Math.max(0.35, Math.min(1.45, spherical.phi + dy * 0.008));
+        this.camera.position.setFromSpherical(spherical).add(this.target);
+        this.camera.lookAt(this.target);
+        this.render();
+      }
+    });
+    this.canvas.addEventListener("pointerup", event => {
+      const drag = this.drag;
+      this.drag = null;
+      this.canvas.style.cursor = "grab";
+      if (drag && drag.moved < 5) this.pickCell(event);
+    });
+    this.canvas.addEventListener("pointercancel", () => {
+      this.drag = null;
+      this.canvas.style.cursor = "grab";
+    });
+    this.canvas.addEventListener("wheel", event => {
+      event.preventDefault();
+      const offset = this.camera.position.clone().sub(this.target);
+      const spherical = new T.Spherical().setFromVector3(offset);
+      spherical.radius = Math.max(7.8, Math.min(19, spherical.radius * (event.deltaY > 0 ? 1.08 : 0.92)));
+      this.camera.position.setFromSpherical(spherical).add(this.target);
+      this.camera.lookAt(this.target);
+      this.render();
+    }, { passive: false });
+
+    if ("ResizeObserver" in window) new ResizeObserver(this.resize).observe(canvas);
+    else window.addEventListener("resize", this.resize);
+    this.resize();
+  }
+
+  ThreeMapView.prototype.pickCell = function(event) {
+    if (!this.onPaint) return;
+    const rect = this.canvas.getBoundingClientRect();
+    this.pointer.set(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hit = this.raycaster.intersectObject(this.surface, false)[0];
+    if (hit && Number.isInteger(hit.instanceId)) {
+      this.onPaint(Math.floor(hit.instanceId / W), hit.instanceId % W);
+    }
+  };
+
+  ThreeMapView.prototype.update = function(field, range, diverging = false) {
+    const T = window.THREE;
+    const cellWidth = MAP_WIDTH / W;
+    const cellDepth = MAP_DEPTH / H;
+    const object = new T.Object3D();
+    const scratchColor = new T.Color();
+    for (let i = 0; i < H; i++) {
+      for (let j = 0; j < W; j++) {
+        const index = i * W + j;
+        const value = field[i][j];
+        const normalized = diverging
+          ? Math.max(0, Math.min(1, 0.5 + value / (2 * range)))
+          : Math.max(0, Math.min(1, (value - range[0]) / Math.max(1e-9, range[1] - range[0])));
+        const height = diverging ? 0.22 + normalized * 1.05 : 0.12 + normalized * 1.15;
+        object.position.set((j - (W - 1) / 2) * cellWidth, height / 2, ((H - 1) / 2 - i) * cellDepth);
+        object.scale.set(1, height, 1);
+        object.updateMatrix();
+        this.surface.setMatrixAt(index, object.matrix);
+        scratchColor.set(diverging ? divergingColor(value, range) : colorAt(value, range[0], range[1]));
+        this.surface.setColorAt(index, scratchColor);
+      }
+    }
+    this.surface.instanceMatrix.needsUpdate = true;
+    if (this.surface.instanceColor) this.surface.instanceColor.needsUpdate = true;
+    this.surface.computeBoundingSphere();
+    this.render();
+  };
+
+  function initMapViews() {
+    if (!window.THREE || !window.WebGL2RenderingContext) return;
+    for (const [key, canvas] of [["base", ui.base], ["shock", ui.shock], ["delta", ui.delta]]) {
+      try {
+        mapViews[key] = new ThreeMapView(canvas);
+        mapViews[key].onPaint = paintCellAt;
+        canvas.classList.add("three-map");
+      } catch (error) {
+        console.warn("Three.js map initialization failed; using 2D maps.", error);
+        mapViews[key] = null;
+      }
+    }
+  }
+
   function formatValue(value) {
     if (!Number.isFinite(value)) return "—";
     const abs = Math.abs(value);
@@ -218,9 +390,12 @@
     const deltaField = baseField.map((row, i) => row.map((value, j) => shockField[i][j] - value));
     const [low, high] = mapRange(baseField, shockField);
     const deltaSpan = Math.max(0.1, ...deltaField.flat().map(Math.abs));
-    drawField(ui.base, baseField, [low, high]);
-    drawField(ui.shock, shockField, [low, high]);
-    drawField(ui.delta, deltaField, deltaSpan, true);
+    if (mapViews.base) mapViews.base.update(baseField, [low, high]);
+    else drawField(ui.base, baseField, [low, high]);
+    if (mapViews.shock) mapViews.shock.update(shockField, [low, high]);
+    else drawField(ui.shock, shockField, [low, high]);
+    if (mapViews.delta) mapViews.delta.update(deltaField, deltaSpan, true);
+    else drawField(ui.delta, deltaField, deltaSpan, true);
     document.querySelector("#base-min").textContent = formatValue(low);
     document.querySelector("#base-max").textContent = formatValue(high);
     document.querySelector("#shock-min").textContent = formatValue(low);
@@ -293,11 +468,7 @@
     runForecast();
   }
 
-  function paintCell(canvas, event) {
-    const rect = canvas.getBoundingClientRect();
-    const x = Math.floor((event.clientX - rect.left) / rect.width * W);
-    const displayRow = Math.floor((event.clientY - rect.top) / rect.height * H);
-    const i = H - 1 - displayRow;
+  function paintCellAt(i, x) {
     if (i < 0 || i >= H || x < 0 || x >= W) return;
     const amount = Number(ui.shockSize.value);
     if (!Number.isFinite(amount) || amount === 0) return;
@@ -311,6 +482,14 @@
     repaintTimer = window.setTimeout(runForecast, 350);
   }
 
+  function paintCell(canvas, event) {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((event.clientX - rect.left) / rect.width * W);
+    const displayRow = Math.floor((event.clientY - rect.top) / rect.height * H);
+    const i = H - 1 - displayRow;
+    paintCellAt(i, x);
+  }
+
   function clearShock() {
     perturbation = zeroShock();
     activePreset = "none";
@@ -318,12 +497,15 @@
     runForecast();
   }
 
+  initMapViews();
+  [["base", ui.base], ["shock", ui.shock], ["delta", ui.delta]].forEach(([key, canvas]) => {
+    if (!mapViews[key]) canvas.addEventListener("click", event => paintCell(canvas, event));
+  });
   document.querySelectorAll(".preset").forEach(button => button.addEventListener("click", () => applyPreset(button.dataset.preset)));
   document.querySelector("#clear-shock").addEventListener("click", clearShock);
   ui.variable.addEventListener("change", () => { configureUnit(); drawAll(); });
   ui.day.addEventListener("input", drawAll);
   ui.refresh.addEventListener("click", runForecast);
-  [ui.base, ui.shock, ui.delta].forEach(canvas => canvas.addEventListener("click", event => paintCell(canvas, event)));
   ui.play.addEventListener("click", () => {
     if (playTimer) {
       window.clearInterval(playTimer);
