@@ -4,7 +4,7 @@
   const H = 32;
   const W = 36;
   const CHANNELS = { t2m: 0, tp: 1, u10: 2, v10: 3, msl: 4, tcwv: 5 };
-  const API = new URLSearchParams(location.search).get("api") || "http://localhost:8000";
+  const API = "http://localhost:8000";
   const sample = [300, 5, 4, 2, 100800, 45];
   const ui = {
     connection: document.querySelector("#connection"),
