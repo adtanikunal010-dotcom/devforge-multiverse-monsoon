@@ -94,6 +94,15 @@
             <option value="deccan">Deccan plateau</option>
           </select>
         </label>
+        <div class="place-control">
+          <label for="place-input">PLACE SEARCH <span>OFFLINE INDIA CATALOG</span></label>
+          <div class="place-row">
+            <input id="place-input" type="search" list="place-options" placeholder="City or latitude, longitude" autocomplete="off" aria-describedby="place-status">
+            <datalist id="place-options"></datalist>
+            <button id="set-place" class="place-button" type="button">LOCATE</button>
+          </div>
+          <small id="place-status" aria-live="polite">Choose a listed city or enter coordinates (lat, lon).</small>
+        </div>
         <div class="timeline-control">
           <div class="timeline-head"><label for="day">FORECAST DAY</label><strong id="day-label">DAY 01 <span>·</span> 10</strong></div>
           <div class="timeline-row">
@@ -136,14 +145,16 @@
     </section>
 
     <section class="shock-lab" aria-label="Counterfactual shock controls">
-      <div class="shock-copy"><p class="eyebrow">MULTIVERSE SIMULATOR · 02 / 03</p><h2>Change one condition.<br><em>Explore another future.</em></h2><p>Each branch starts from the same initial state. A zero shock reproduces the baseline.</p><div id="shock-status" class="shock-status" role="status" aria-live="polite">No shock applied. Click a map cell or choose a preset.</div></div>
+      <div class="shock-copy"><p class="eyebrow">MULTIVERSE SIMULATOR · 02 / 03</p><h2>Change one condition.<br><em>Explore another future.</em></h2><p>Each branch starts from the same initial state. A zero shock reproduces the baseline.</p><div id="shock-status" class="shock-status" role="status" aria-live="polite">No shock applied. Click a map cell to add a local perturbation.</div></div>
       <div class="shock-controls">
-        <div class="preset-head"><span>PRESET EXPERIMENTS</span><span class="preset-caption">PHYSICAL-UNIT DELTAS</span></div>
-        <div class="preset-grid">
-          <button class="preset-button" data-preset="warm" type="button"><span class="preset-number">01</span><span><strong>Warm Bay of Bengal</strong><small>+2 K · 8–20°N, 82–94°E</small></span><span class="preset-arrow">↗</span></button>
-          <button class="preset-button" data-preset="arabian" type="button"><span class="preset-number">02</span><span><strong>Weaken Arabian winds</strong><small>−3 m/s · 8–20°N, 65–75°E</small></span><span class="preset-arrow">↗</span></button>
-          <button class="preset-button" data-preset="el-nino" type="button"><span class="preset-number">03</span><span><strong>El Niño heat dome</strong><small>+2 K · central India</small></span><span class="preset-arrow">↗</span></button>
-        </div>
+        <details class="preset-examples">
+          <summary><span>OPTIONAL EXAMPLE EXPERIMENTS</span><small>3 quick-start scenarios</small></summary>
+          <div class="preset-grid">
+            <button class="preset-button" data-preset="warm" type="button"><span class="preset-number">01</span><span><strong>Warm Bay of Bengal</strong><small>+2 K · 8–20°N, 82–94°E</small></span><span class="preset-arrow">↗</span></button>
+            <button class="preset-button" data-preset="arabian" type="button"><span class="preset-number">02</span><span><strong>Weaken Arabian winds</strong><small>−3 m/s · 8–20°N, 65–75°E</small></span><span class="preset-arrow">↗</span></button>
+            <button class="preset-button" data-preset="el-nino" type="button"><span class="preset-number">03</span><span><strong>El Niño heat dome</strong><small>+2 K · central India</small></span><span class="preset-arrow">↗</span></button>
+          </div>
+        </details>
         <div class="custom-shock">
           <label for="shock-size">MAP PAINT AMOUNT</label>
           <div class="paint-input"><input id="shock-size" type="number" value="2" step="0.5" aria-label="Map perturbation amount"><span id="shock-unit">mm/day</span><small>Click any map cell to apply</small></div>

@@ -32,6 +32,42 @@
     deccan: { label: "Deccan plateau", latMin: 10, latMax: 22, lonMin: 74, lonMax: 85, center: [16, 79.5] },
   };
   const INDIA_REGIONS = ["west", "gangetic", "bay", "deccan"];
+  const PLACE_CATALOG = [
+    { name: "Ahmedabad, Gujarat", lat: 23.0225, lon: 72.5714, aliases: ["Ahmedabad"] },
+    { name: "Amritsar, Punjab", lat: 31.634, lon: 74.8723, aliases: ["Amritsar"] },
+    { name: "Bengaluru, Karnataka", lat: 12.9716, lon: 77.5946, aliases: ["Bangalore", "Bengaluru"] },
+    { name: "Bhopal, Madhya Pradesh", lat: 23.2599, lon: 77.4126, aliases: ["Bhopal"] },
+    { name: "Bhubaneswar, Odisha", lat: 20.2961, lon: 85.8245, aliases: ["Bhubaneswar"] },
+    { name: "Chandigarh", lat: 30.7333, lon: 76.7794, aliases: ["Chandigarh"] },
+    { name: "Chennai, Tamil Nadu", lat: 13.0827, lon: 80.2707, aliases: ["Chennai", "Madras"] },
+    { name: "Dehradun, Uttarakhand", lat: 30.3165, lon: 78.0322, aliases: ["Dehradun"] },
+    { name: "Delhi, Delhi", lat: 28.6139, lon: 77.209, aliases: ["Delhi", "New Delhi"] },
+    { name: "Dispur, Assam", lat: 26.1433, lon: 91.7898, aliases: ["Guwahati", "Dispur"] },
+    { name: "Gandhinagar, Gujarat", lat: 23.2156, lon: 72.6369, aliases: ["Gandhinagar"] },
+    { name: "Gangtok, Sikkim", lat: 27.3389, lon: 88.6065, aliases: ["Gangtok"] },
+    { name: "Hyderabad, Telangana", lat: 17.385, lon: 78.4867, aliases: ["Hyderabad"] },
+    { name: "Imphal, Manipur", lat: 24.817, lon: 93.9368, aliases: ["Imphal"] },
+    { name: "Indore, Madhya Pradesh", lat: 22.7196, lon: 75.8577, aliases: ["Indore"] },
+    { name: "Jaipur, Rajasthan", lat: 26.9124, lon: 75.7873, aliases: ["Jaipur"] },
+    { name: "Jammu, Jammu and Kashmir", lat: 32.7266, lon: 74.857, aliases: ["Jammu"] },
+    { name: "Kochi, Kerala", lat: 9.9312, lon: 76.2673, aliases: ["Kochi", "Cochin"] },
+    { name: "Kolkata, West Bengal", lat: 22.5726, lon: 88.3639, aliases: ["Kolkata", "Calcutta"] },
+    { name: "Lucknow, Uttar Pradesh", lat: 26.8467, lon: 80.9462, aliases: ["Lucknow"] },
+    { name: "Mumbai, Maharashtra", lat: 19.076, lon: 72.8777, aliases: ["Mumbai", "Bombay"] },
+    { name: "Nagpur, Maharashtra", lat: 21.1458, lon: 79.0882, aliases: ["Nagpur"] },
+    { name: "Panaji, Goa", lat: 15.4909, lon: 73.8278, aliases: ["Panaji", "Goa"] },
+    { name: "Patna, Bihar", lat: 25.5941, lon: 85.1376, aliases: ["Patna"] },
+    { name: "Pune, Maharashtra", lat: 18.5204, lon: 73.8567, aliases: ["Pune"] },
+    { name: "Raipur, Chhattisgarh", lat: 21.2514, lon: 81.6296, aliases: ["Raipur"] },
+    { name: "Ranchi, Jharkhand", lat: 23.3441, lon: 85.3096, aliases: ["Ranchi"] },
+    { name: "Shillong, Meghalaya", lat: 25.5788, lon: 91.8933, aliases: ["Shillong"] },
+    { name: "Shimla, Himachal Pradesh", lat: 31.1048, lon: 77.1734, aliases: ["Shimla"] },
+    { name: "Srinagar, Jammu and Kashmir", lat: 34.0837, lon: 74.7973, aliases: ["Srinagar"] },
+    { name: "Surat, Gujarat", lat: 21.1702, lon: 72.8311, aliases: ["Surat"] },
+    { name: "Thiruvananthapuram, Kerala", lat: 8.5241, lon: 76.9366, aliases: ["Thiruvananthapuram", "Trivandrum"] },
+    { name: "Varanasi, Uttar Pradesh", lat: 25.3176, lon: 82.9739, aliases: ["Varanasi", "Banaras"] },
+    { name: "Visakhapatnam, Andhra Pradesh", lat: 17.6868, lon: 83.2185, aliases: ["Visakhapatnam", "Vizag"] },
+  ];
   const STATIC_MAPS = window.MONSOON_STATIC_MAPS || null;
   const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
   const ui = {
@@ -39,6 +75,10 @@
     connectionText: document.querySelector("#connection span:last-child"),
     variable: document.querySelector("#variable"),
     region: document.querySelector("#region"),
+    placeInput: document.querySelector("#place-input"),
+    placeOptions: document.querySelector("#place-options"),
+    placeStatus: document.querySelector("#place-status"),
+    setPlace: document.querySelector("#set-place"),
     day: document.querySelector("#day"),
     dayLabel: document.querySelector("#day-label"),
     play: document.querySelector("#play"),
@@ -72,6 +112,7 @@
   let repaintTimer = null;
   let activePreset = "none";
   let activeRegion = "all";
+  let activePlace = null;
 
   function zeroShock() {
     return Array.from({ length: 6 }, () => Array.from({ length: H }, () => Array(W).fill(0)));
@@ -214,11 +255,16 @@
   }
 
   function regionMatches(regionKey, i, j) {
+    if (activePlace && regionKey === "all") return Math.abs(i - activePlace.gridI) <= 1 && Math.abs(j - activePlace.gridJ) <= 1;
     if (regionKey === "all") return true;
     const region = REGIONS[regionKey];
     const lat = 6.5 + i;
     const lon = 65.5 + j;
     return lat >= region.latMin && lat <= region.latMax && lon >= region.lonMin && lon <= region.lonMax;
+  }
+
+  function selectedAreaLabel() {
+    return activePlace ? `${activePlace.name} · local grid` : REGIONS[activeRegion].label;
   }
 
   function worldPoint(lon, lat) {
@@ -271,6 +317,26 @@
     for (let x = 0; x <= W; x++) { context.beginPath(); context.moveTo(x * cellWidth, 0); context.lineTo(x * cellWidth, canvas.height); context.stroke(); }
     for (let y = 0; y <= H; y++) { context.beginPath(); context.moveTo(0, y * cellHeight); context.lineTo(canvas.width, y * cellHeight); context.stroke(); }
     strokeIndia(context, canvas.width, canvas.height);
+    if (activePlace) {
+      const left = Math.max(0, activePlace.gridJ - 1) * cellWidth;
+      const right = (Math.min(W - 1, activePlace.gridJ + 1) + 1) * cellWidth;
+      const top = (H - 1 - Math.min(H - 1, activePlace.gridI + 1)) * cellHeight;
+      const bottom = (H - Math.max(0, activePlace.gridI - 1)) * cellHeight;
+      context.save();
+      context.strokeStyle = "rgba(193, 250, 255, .98)";
+      context.lineWidth = Math.max(2, canvas.width / 360);
+      context.setLineDash([7, 4]);
+      context.strokeRect(left + 1, top + 1, right - left - 2, bottom - top - 2);
+      const x = (activePlace.lon - 65.5) / 35 * canvas.width;
+      const y = (37.5 - activePlace.lat) / 31 * canvas.height;
+      context.setLineDash([]);
+      context.beginPath();
+      context.arc(x, y, Math.max(5, canvas.width / 110), 0, Math.PI * 2);
+      context.fillStyle = "#d8fbff";
+      context.fill();
+      context.stroke();
+      context.restore();
+    }
   }
 
   function createAtmosphere(T, scene, seed) {
@@ -563,32 +629,17 @@
   };
 
   ThreeMapView.prototype.focusRegion = function(regionKey) {
-    const T = window.THREE;
     const region = REGIONS[regionKey];
     this.selectedRegion = regionKey;
     const [lat, lon] = region.center;
-    const center = worldPoint(lon, lat);
-    const nextTarget = new T.Vector3(center.x, 0.42, center.z);
-    const offset = this.camera.position.clone().sub(this.target).normalize();
-    const radius = regionKey === "all" ? 14.8 : 10.3;
-    const nextPosition = nextTarget.clone().add(offset.multiplyScalar(radius));
     this.showRegionBounds(regionKey);
-    if (this.cameraFrame) cancelAnimationFrame(this.cameraFrame);
-    const fromPosition = this.camera.position.clone();
-    const fromTarget = this.target.clone();
-    const start = performance.now();
-    const duration = prefersReducedMotion ? 0 : 420;
-    const animate = now => {
-      const t = duration ? Math.min(1, (now - start) / duration) : 1;
-      const eased = 1 - (1 - t) ** 3;
-      this.camera.position.lerpVectors(fromPosition, nextPosition, eased);
-      this.target.lerpVectors(fromTarget, nextTarget, eased);
-      this.camera.lookAt(this.target);
-      this.render();
-      if (t < 1) this.cameraFrame = requestAnimationFrame(animate);
-      else this.cameraFrame = 0;
-    };
-    animate(start);
+    animateCameraTo(this, lat, lon, regionKey === "all" ? 14.8 : 10.3);
+  };
+
+  ThreeMapView.prototype.focusPlace = function(place) {
+    this.selectedRegion = "place";
+    this.showPlaceBounds(place);
+    animateCameraTo(this, place.lat, place.lon, 8.8);
   };
 
   ThreeMapView.prototype.showRegionBounds = function(regionKey) {
@@ -605,6 +656,45 @@
     this.regionOutline.geometry = new T.BufferGeometry().setFromPoints(points);
     this.regionOutline.visible = true;
   };
+
+  ThreeMapView.prototype.showPlaceBounds = function(place) {
+    const T = window.THREE;
+    const minLon = Math.max(65.5, place.gridLon - 1.5);
+    const maxLon = Math.min(100.5, place.gridLon + 1.5);
+    const minLat = Math.max(6.5, place.gridLat - 1.5);
+    const maxLat = Math.min(37.5, place.gridLat + 1.5);
+    const corners = [
+      worldPoint(minLon, maxLat), worldPoint(maxLon, maxLat),
+      worldPoint(maxLon, minLat), worldPoint(minLon, minLat),
+    ];
+    this.regionOutline.geometry.dispose();
+    this.regionOutline.geometry = new T.BufferGeometry().setFromPoints(corners.map(point => new T.Vector3(point.x, 1.74, point.z)));
+    this.regionOutline.visible = true;
+  };
+
+  function animateCameraTo(view, lat, lon, radius) {
+    const T = window.THREE;
+    const center = worldPoint(lon, lat);
+    const nextTarget = new T.Vector3(center.x, 0.42, center.z);
+    const offset = view.camera.position.clone().sub(view.target).normalize();
+    const nextPosition = nextTarget.clone().add(offset.multiplyScalar(radius));
+    if (view.cameraFrame) cancelAnimationFrame(view.cameraFrame);
+    const fromPosition = view.camera.position.clone();
+    const fromTarget = view.target.clone();
+    const start = performance.now();
+    const duration = prefersReducedMotion ? 0 : 420;
+    const animate = now => {
+      const t = duration ? Math.min(1, (now - start) / duration) : 1;
+      const eased = 1 - (1 - t) ** 3;
+      view.camera.position.lerpVectors(fromPosition, nextPosition, eased);
+      view.target.lerpVectors(fromTarget, nextTarget, eased);
+      view.camera.lookAt(view.target);
+      view.render();
+      if (t < 1) view.cameraFrame = requestAnimationFrame(animate);
+      else view.cameraFrame = 0;
+    };
+    animate(start);
+  }
 
   ThreeMapView.prototype.tick = function(delta) {
     if (prefersReducedMotion || !this.particles) return;
@@ -698,8 +788,10 @@
     ui.summaryRain.textContent = Number.isFinite(peakRain) ? formatValue(peakRain) : "—";
     ui.summaryHeat.textContent = risks.heat.toLocaleString("en-US");
     ui.summaryDelta.textContent = formatValue(maxDelta);
-    ui.summaryRegion.textContent = region.label;
-    ui.summaryRegionCells.textContent = activeRegion === "all" ? "32 × 36 model grid" : `${countRegionCells(activeRegion)} modeled cells`;
+    ui.summaryRegion.textContent = selectedAreaLabel();
+    ui.summaryRegionCells.textContent = activePlace
+      ? `${countRegionCells("all")} nearby grid cells · ~1° spacing`
+      : activeRegion === "all" ? "32 × 36 model grid" : `${countRegionCells(activeRegion)} modeled cells`;
   }
 
   function countRegionCells(regionKey) {
@@ -753,7 +845,7 @@
     document.querySelector("#rain-count").textContent = risks.heavy.toLocaleString("en-US");
     document.querySelector("#cloud-count").textContent = risks.cloud.toLocaleString("en-US");
     document.querySelector("#drought-count").textContent = risks.drought.toLocaleString("en-US");
-    ui.activeRegionName.textContent = REGIONS[activeRegion].label;
+    ui.activeRegionName.textContent = selectedAreaLabel();
     updateRegionalSummary(day);
   }
 
@@ -779,7 +871,7 @@
 
   function setShockStatus() {
     const labels = {
-      none: "No shock applied. Click a map cell or choose a preset to create a local perturbation.",
+      none: "No shock applied. Click a map cell to add a local perturbation, or expand the optional examples.",
       warm: "Warm Bay of Bengal preset · +2 K over 8–20°N, 82–94°E.",
       arabian: "Weak Arabian Sea wind preset · −3 m/s over 8–20°N, 65–75°E.",
       "el-nino": "El Niño heat dome preset · +2 K over central India.",
@@ -865,8 +957,12 @@
 
   function selectRegion(regionKey) {
     if (!REGIONS[regionKey]) return;
+    activePlace = null;
     activeRegion = regionKey;
     ui.region.value = regionKey;
+    ui.placeInput.value = "";
+    ui.placeStatus.classList.remove("invalid");
+    ui.placeStatus.textContent = "Place focus cleared · choose a city or enter coordinates.";
     Object.values(mapViews).forEach(view => view?.focusRegion(regionKey));
     if (shocked) drawAll();
     else {
@@ -876,6 +972,65 @@
     }
   }
 
+  function normalizePlaceName(value) {
+    return value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  }
+
+  function populatePlaceOptions() {
+    for (const place of PLACE_CATALOG) {
+      const option = document.createElement("option");
+      option.value = place.name;
+      ui.placeOptions.appendChild(option);
+    }
+  }
+
+  function locatePlace() {
+    const query = ui.placeInput.value.trim();
+    if (!query) {
+      ui.placeStatus.classList.add("invalid");
+      ui.placeStatus.textContent = "Enter an Indian city or latitude, longitude.";
+      return;
+    }
+    const normalized = normalizePlaceName(query);
+    const catalogPlace = PLACE_CATALOG.find(place => [place.name, ...place.aliases].some(name => normalizePlaceName(name) === normalized));
+    let lat;
+    let lon;
+    let name;
+    if (catalogPlace) {
+      ({ lat, lon, name } = catalogPlace);
+    } else {
+      const coordinates = query.match(/^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/);
+      if (!coordinates) {
+        ui.placeStatus.classList.add("invalid");
+        ui.placeStatus.textContent = "Not in the offline city list. Try a listed city or enter lat, lon.";
+        return;
+      }
+      lat = Number(coordinates[1]);
+      lon = Number(coordinates[2]);
+      name = "Custom coordinates";
+    }
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < 6.5 || lat > 37.5 || lon < 65.5 || lon > 100.5) {
+      ui.placeStatus.classList.add("invalid");
+      ui.placeStatus.textContent = "Location is outside the model grid (6.5–37.5°N, 65.5–100.5°E).";
+      return;
+    }
+    const gridI = Math.max(0, Math.min(H - 1, Math.round(lat - 6.5)));
+    const gridJ = Math.max(0, Math.min(W - 1, Math.round(lon - 65.5)));
+    activePlace = { name, lat, lon, gridI, gridJ, gridLat: 6.5 + gridI, gridLon: 65.5 + gridJ };
+    activeRegion = "all";
+    ui.region.value = "all";
+    ui.placeStatus.classList.remove("invalid");
+    ui.placeStatus.textContent = `${name} · nearest grid cell ${activePlace.gridLat.toFixed(1)}°N, ${activePlace.gridLon.toFixed(1)}°E · showing a 3 × 3 cell area.`;
+    Object.values(mapViews).forEach(view => view?.focusPlace(activePlace));
+    if (shocked) drawAll();
+    else {
+      ui.summaryRegion.textContent = selectedAreaLabel();
+      ui.summaryRegionCells.textContent = `${countRegionCells("all")} nearby grid cells · ~1° spacing`;
+      ui.activeRegionName.textContent = selectedAreaLabel();
+    }
+  }
+
+  populatePlaceOptions();
   initMapViews();
   for (const [key, canvas] of [["base", ui.base], ["shock", ui.shock], ["delta", ui.delta]]) {
     if (!mapViews[key]) {
@@ -888,6 +1043,10 @@
   document.querySelector("#clear-shock").addEventListener("click", clearShock);
   ui.variable.addEventListener("change", () => { configureUnit(); drawAll(); });
   ui.region.addEventListener("change", () => selectRegion(ui.region.value));
+  ui.setPlace.addEventListener("click", locatePlace);
+  ui.placeInput.addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); locatePlace(); }
+  });
   ui.day.addEventListener("input", drawAll);
   ui.refresh.addEventListener("click", runForecast);
   ui.regionalSummary.addEventListener("click", event => {

@@ -22,7 +22,7 @@ From the repository root:
    PYTHONDONTWRITEBYTECODE=1 python serve.py --port 8000
    ```
 
-3. Open `dashboard/index.html` in a browser. The UI sends requests only to `http://localhost:8000` and uses a clearly labelled synthetic sample state until a real three-day initial state is connected.
+3. Open `dashboard/index.html` in a browser. The UI sends requests only to `http://localhost:8000` and uses a clearly labelled synthetic sample state until a real three-day initial state is connected. The place search uses a bundled offline list of Indian cities or accepts latitude/longitude; results focus a 3 × 3 neighborhood on the model's approximately 1° grid, not a city-scale forecast.
 
 ## Architecture
 
