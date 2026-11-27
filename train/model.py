@@ -126,7 +126,7 @@ def rollout_10_days(
         single = True
     elif x.ndim == 4 and x.shape[1] == 6:
         x = x.unsqueeze(1)  # [B,1,6,H,W]
-        single = True
+        single = False
     elif x.ndim == 5 and x.shape[2] == 6:
         pass
     else:
@@ -170,7 +170,8 @@ def rollout_10_days(
         physical[:, 1] = torch.clamp(physical[:, 1], min=0.0)
         physical[:, 5] = torch.clamp(physical[:, 5], min=0.0)
 
-        current = (physical - mean) / std
+        current_norm_clamped = (physical - mean[:, 0]) / std[:, 0]
+        history = torch.cat([history[:, 1:], current_norm_clamped.unsqueeze(1)], dim=1)
 
         outputs.append(physical)
 

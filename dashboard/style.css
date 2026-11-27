@@ -128,7 +128,7 @@ h1 em, .shock-copy h2 em { color: var(--cyan); font-style: normal; text-shadow: 
 .sample-dot { background: var(--amber); box-shadow: 0 0 8px rgba(230, 189, 102, .35); }
 .control-grid { display: grid; grid-template-columns: minmax(145px, .75fr) minmax(155px, .82fr) minmax(245px, 1.25fr) minmax(280px, 2fr) auto; align-items: end; gap: 12px; }
 .control-field { display: grid; gap: 7px; color: var(--faint); font-family: var(--mono); font-size: 8px; letter-spacing: .11em; }
-.control-field select { width: 100%; min-height: 42px; padding: 0 34px 0 12px; border: 1px solid rgba(129, 171, 194, .2); border-radius: 7px; appearance: none; background: #0b1d2c url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m2 4 4 4 4-4' fill='none' stroke='%237d9cac' stroke-width='1.4'/%3E%3C/svg%3E") no-repeat right 12px center; color: var(--ink); font-family: inherit; font-size: 11px; letter-spacing: .01em; }
+.control-field select { width: 100%; min-height: 42px; padding: 0 12px; border: 1px solid rgba(129, 171, 194, .2); border-radius: 7px; appearance: auto; background: #0b1d2c; color: var(--ink); font-family: inherit; font-size: 11px; letter-spacing: .01em; }
 .control-field select:hover { border-color: rgba(84, 213, 237, .4); }
 .place-control { display: grid; min-width: 0; gap: 6px; color: var(--faint); font-family: var(--mono); font-size: 8px; letter-spacing: .1em; }
 .place-control > label { display: flex; justify-content: space-between; gap: 5px; }

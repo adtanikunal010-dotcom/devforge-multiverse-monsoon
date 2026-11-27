@@ -78,21 +78,25 @@ def simulate(init_states: np.ndarray, doy_sincos, steps: int, perturbation) -> n
     s1 = init_states[-2].astype("f4", copy=False)
     s2 = init_states[-1].astype("f4", copy=True)
 
-    # Damped 3-day temporal tendency so t-2 and t-1 history informs the initial state
-    tendency = 0.02 * (s2 - s1) + 0.01 * (s1 - s0)
-    x0 = s2 + tendency
-    x0[1] = np.maximum(x0[1], 0.0)
-    x0[5] = np.maximum(x0[5], 0.0)
+    if _MODEL.history_days == 1:
+        # Damped 3-day temporal tendency so t-2 and t-1 history informs the initial state
+        tendency = 0.02 * (s2 - s1) + 0.01 * (s1 - s0)
+        x_in = s2 + tendency
+        x_in[1] = np.maximum(x_in[1], 0.0)
+        x_in[5] = np.maximum(x_in[5], 0.0)
+        if perturbation is not None and np.any(perturbation != 0.0):
+            x_in = x_in + perturbation.astype("f4", copy=False)
+    else:
+        x_in = np.stack([s0, s1, s2], axis=0).astype("f4", copy=True)
+        if perturbation is not None and np.any(perturbation != 0.0):
+            x_in[-1] = x_in[-1] + perturbation.astype("f4", copy=False)
 
-    if perturbation is not None and np.any(perturbation != 0.0):
-        history[-1] = history[-1] + perturbation.astype("f4", copy=False)
-
-    if not np.all(np.isfinite(history)):
-        history = np.nan_to_num(history, nan=0.0, posinf=0.0, neginf=0.0)
+    if not np.all(np.isfinite(x_in)):
+        x_in = np.nan_to_num(x_in, nan=0.0, posinf=0.0, neginf=0.0)
 
     doy = _doy_from_sincos(doy_sincos)
     with torch.no_grad():
-        out_t = rollout_10_days(_MODEL, history, _STATIC_MAPS, _STATS, doy, steps=steps)
+        out_t = rollout_10_days(_MODEL, x_in, _STATIC_MAPS, _STATS, doy, steps=steps)
 
     out = out_t.cpu().numpy().astype("f4", copy=False)
     if not np.all(np.isfinite(out)):

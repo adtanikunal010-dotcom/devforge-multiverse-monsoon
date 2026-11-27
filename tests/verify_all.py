@@ -802,7 +802,35 @@ class VerificationSuite:
                     max_time < MAX_LATENCY_SECONDS, f"max={max_time:.3f}s")
 
     def check_server_memory_if_possible(self, port: int) -> None:
+        self.section("9. OPTIONAL SERVER RAM CHECK")
+        pids: list[int] = []
+        try:
+            import psutil  # type: ignore
+            for connection in psutil.net_connections(kind="inet"):
+                if (
+                    connection.status == psutil.CONN_LISTEN
+                    and connection.laddr
+                    and connection.laddr.port == port
+                    and connection.pid
+                ):
+                    pids.append(int(connection.pid))
+        except Exception:
+            pids = []
 
+        if not pids:
+            lsof_code, lsof_out = self.run_command(["lsof", "-ti", f":{port}"], timeout=5.0)
+            if lsof_code == 0 and lsof_out.strip():
+                for tok in lsof_out.strip().splitlines():
+                    if tok.strip().isdigit():
+                        pids.append(int(tok.strip()))
+
+        pids = sorted(set(pids))
+        if not pids:
+            self.skip(
+                "server process RAM below 6 GB",
+                "Could not identify the process listening on the requested port",
+                required=True,
+            )
             return
 
         measurements: list[tuple[int, int]] = []
@@ -847,32 +875,6 @@ class VerificationSuite:
             maximum < MAX_RAM_BYTES,
             detail,
         )
-
-    def load_reference_validation_case(self) -> bool:
-        """Load one chronological validation window for real Day-8 anti-blur checks."""
-        if self.reference_dataset is None or not self.reference_dataset.is_file():
-            self.skip("real held-out validation sample", 
-                      f"dataset not found at {self.reference_dataset}; it must stay out of Git", required=True)
-            return False
-        try:
-
-            listeners = []
-            for connection in psutil.net_connections(kind="inet"):
-                if connection.status == psutil.CONN_LISTEN and connection.laddr and connection.laddr.port == port and connection.pid:
-                    listeners.append(connection.pid)
-            if not listeners:
-                self.skip("server process RAM below 6 GB", "Could not identify the process listening on the requested port", required=True)
-                return
-            measurements = []
-            for pid in sorted(set(listeners)):
-                process = psutil.Process(pid)
-                rss = process.memory_info().rss
-                measurements.append((pid, rss))
-            maximum = max(rss for _, rss in measurements)
-            detail = ", ".join(f"PID {pid}: {rss / 1024**3:.2f} GB" for pid, rss in measurements)
-            self.result("server process RAM is below 6 GB", maximum < MAX_RAM_BYTES, detail)
-        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as exc:
-            self.skip("server process RAM below 6 GB", f"OS did not allow process inspection: {exc}", required=True)
 
     def load_reference_validation_case(self) -> bool:
         """Load one chronological validation window for real Day-8 anti-blur checks."""
