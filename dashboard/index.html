@@ -14,6 +14,11 @@
 <body>
   <div class="ambient ambient-a" aria-hidden="true"></div>
   <div class="ambient ambient-b" aria-hidden="true"></div>
+  <div class="weather-atmosphere" aria-hidden="true">
+    <div class="weather-cloud weather-cloud-a"></div>
+    <div class="weather-cloud weather-cloud-b"></div>
+    <canvas id="page-rain"></canvas>
+  </div>
 
   <header class="topbar">
     <a class="brand" href="#overview" aria-label="Monsoon Intelligence home">
@@ -165,14 +170,15 @@
 
     <section id="risk" class="risk-section">
       <div class="section-head risk-head">
-        <div><p class="eyebrow">KHARIF RISK INTELLIGENCE · 03 / 03</p><h2>Signals across the season</h2><p class="section-description">Transparent prototype thresholds applied to the selected shock branch.</p></div>
+        <div><p class="eyebrow">KHARIF RISK INTELLIGENCE · 03 / 03</p><h2>Signals across the season</h2><p class="section-description">Daily threshold counts with modeled weather evidence for the selected place and scenario.</p></div>
         <span class="prototype-badge"><span></span> PROTOTYPE ALERTS · NOT OFFICIAL WARNINGS</span>
       </div>
+      <div id="risk-context" class="risk-context" aria-live="polite">Run a forecast to inspect the selected day and area.</div>
       <div class="risk-grid" aria-live="polite">
-        <article class="risk-card risk-heat"><div class="risk-card-head"><span class="risk-symbol">°</span><span>HEATWAVE</span><span class="risk-index">01</span></div><strong id="heat-count">—</strong><div class="risk-card-bottom"><span>cells flagged</span><code>t₂m &gt; 313.15 K</code></div></article>
-        <article class="risk-card risk-rain"><div class="risk-card-head"><span class="risk-symbol">≈</span><span>HEAVY RAIN · FLOOD RISK</span><span class="risk-index">02</span></div><strong id="rain-count">—</strong><div class="risk-card-bottom"><span>cells flagged</span><code>64.5 &lt; tp ≤ 115.5</code></div></article>
-        <article class="risk-card risk-cloud"><div class="risk-card-head"><span class="risk-symbol">↯</span><span>CLOUDBURST</span><span class="risk-index">03</span></div><strong id="cloud-count">—</strong><div class="risk-card-bottom"><span>cells flagged</span><code>tp &gt; 115.5 mm/day</code></div></article>
-        <article class="risk-card risk-drought"><div class="risk-card-head"><span class="risk-symbol">◒</span><span>KHARIF DROUGHT STRESS</span><span class="risk-index">04</span></div><strong id="drought-count">—</strong><div class="risk-card-bottom"><span>cells · 10-day window</span><code>tp &lt; 25 mm · mean t₂m &gt; 308.15 K</code></div></article>
+        <article class="risk-card risk-heat"><div class="risk-card-head"><span class="risk-symbol">°</span><span>HEATWAVE</span><span class="risk-index">01</span></div><strong id="heat-count">—</strong><div class="risk-card-bottom"><span>cells flagged today</span><code>t₂m &gt; 313.15 K</code></div><p id="heat-evidence" class="risk-evidence">Waiting for forecast</p></article>
+        <article class="risk-card risk-rain"><div class="risk-card-head"><span class="risk-symbol">≈</span><span>HEAVY RAIN · FLOOD RISK</span><span class="risk-index">02</span></div><strong id="rain-count">—</strong><div class="risk-card-bottom"><span>cells flagged today</span><code>64.5 &lt; tp ≤ 115.5</code></div><p id="rain-evidence" class="risk-evidence">Waiting for forecast</p></article>
+        <article class="risk-card risk-cloud"><div class="risk-card-head"><span class="risk-symbol">↯</span><span>CLOUDBURST</span><span class="risk-index">03</span></div><strong id="cloud-count">—</strong><div class="risk-card-bottom"><span>cells flagged today</span><code>tp &gt; 115.5 mm/day</code></div><p id="cloud-evidence" class="risk-evidence">Waiting for forecast</p></article>
+        <article class="risk-card risk-drought"><div class="risk-card-head"><span class="risk-symbol">◒</span><span>KHARIF DROUGHT STRESS</span><span class="risk-index">04</span></div><strong id="drought-count">—</strong><div class="risk-card-bottom"><span>cells · 10-day window</span><code>tp &lt; 25 mm · mean t₂m &gt; 308.15 K</code></div><p id="drought-evidence" class="risk-evidence">Waiting for forecast</p></article>
       </div>
       <div class="regional-panel">
         <div class="regional-heading"><div><p class="eyebrow">REGIONAL WATCH</p><h3 id="active-region-name">All India</h3></div><span id="regional-status" class="regional-status">WAITING FOR FORECAST</span></div>

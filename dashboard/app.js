@@ -102,6 +102,7 @@
     regionalSummary: document.querySelector("#regional-summary"),
     regionalStatus: document.querySelector("#regional-status"),
     activeRegionName: document.querySelector("#active-region-name"),
+    riskContext: document.querySelector("#risk-context"),
   };
   const mapViews = {};
   let baseline = null;
@@ -287,6 +288,80 @@
     ctx.lineWidth = Math.max(1.2, width / 500);
     ctx.stroke();
     ctx.restore();
+  }
+
+  function initPageAtmosphere() {
+    const canvas = document.querySelector("#page-rain");
+    const context = canvas?.getContext("2d", { alpha: true });
+    if (!context) return;
+    let width = 0;
+    let height = 0;
+    let pixelRatio = 1;
+    let lastFrame = 0;
+    let seed = 20261127;
+    const random = () => {
+      seed = (1664525 * seed + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+    const drops = [];
+
+    function resize() {
+      width = window.innerWidth;
+      height = window.innerHeight;
+      pixelRatio = Math.min(window.devicePixelRatio || 1, 1.35);
+      canvas.width = Math.round(width * pixelRatio);
+      canvas.height = Math.round(height * pixelRatio);
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      const count = Math.max(42, Math.min(138, Math.round(width * height / 10500)));
+      drops.length = 0;
+      for (let index = 0; index < count; index++) {
+        drops.push({
+          x: random() * width,
+          y: random() * height,
+          length: 6 + random() * 14,
+          speed: 25 + random() * 38,
+          drift: 1.1 + random() * 3.5,
+          opacity: 0.035 + random() * 0.08,
+          blue: random() > 0.52,
+        });
+      }
+      draw(0, 0);
+    }
+
+    function draw(now, delta) {
+      context.clearRect(0, 0, width, height);
+      context.lineWidth = 0.7;
+      for (const drop of drops) {
+        if (!prefersReducedMotion && delta) {
+          drop.y += drop.speed * delta;
+          drop.x += drop.drift * delta;
+          if (drop.y - drop.length > height) {
+            drop.y = -drop.length - random() * 30;
+            drop.x = random() * width;
+          }
+          if (drop.x > width + 4) drop.x = -4;
+        }
+        context.strokeStyle = drop.blue
+          ? `rgba(94, 155, 218, ${drop.opacity * 0.72})`
+          : `rgba(91, 205, 221, ${drop.opacity})`;
+        context.beginPath();
+        context.moveTo(drop.x, drop.y);
+        context.lineTo(drop.x + drop.drift * 0.12, drop.y + drop.length);
+        context.stroke();
+      }
+      lastFrame = now;
+    }
+
+    function animate(now) {
+      if (document.visibilityState === "visible" && now - lastFrame >= 40) {
+        draw(now, Math.min((now - lastFrame) / 1000, 0.08));
+      }
+      if (!prefersReducedMotion) requestAnimationFrame(animate);
+    }
+
+    window.addEventListener("resize", resize, { passive: true });
+    resize();
+    if (!prefersReducedMotion) requestAnimationFrame(animate);
   }
 
   function drawField(canvas, field, range, diverging = false) {
@@ -801,14 +876,17 @@
   }
 
   function computeRegionRisks(regionKey, day) {
-    if (!shocked) return { heat: 0, heavy: 0, cloud: 0, drought: 0 };
+    if (!shocked) return { heat: 0, heavy: 0, cloud: 0, drought: 0, maxTemp: NaN, peakRain: NaN, driestRain: NaN, driestTemp: NaN };
     const frame = shocked[day];
-    const risks = { heat: 0, heavy: 0, cloud: 0, drought: 0 };
+    const risks = { heat: 0, heavy: 0, cloud: 0, drought: 0, maxTemp: -Infinity, peakRain: -Infinity, driestRain: Infinity, driestTemp: NaN };
     for (let i = 0; i < H; i++) {
       for (let j = 0; j < W; j++) {
         if (!regionMatches(regionKey, i, j)) continue;
-        if (frame[CHANNELS.t2m][i][j] > 313.15) risks.heat++;
+        const temperature = frame[CHANNELS.t2m][i][j];
+        risks.maxTemp = Math.max(risks.maxTemp, temperature);
+        if (temperature > 313.15) risks.heat++;
         const rain = frame[CHANNELS.tp][i][j];
+        risks.peakRain = Math.max(risks.peakRain, rain);
         if (rain > 64.5 && rain <= 115.5) risks.heavy++;
         if (rain > 115.5) risks.cloud++;
         let rainSum = 0;
@@ -817,21 +895,37 @@
           rainSum += shocked[step][CHANNELS.tp][i][j];
           tempSum += shocked[step][CHANNELS.t2m][i][j];
         }
-        if (rainSum < 25 && tempSum / 10 > 308.15) risks.drought++;
+        const meanTemp = tempSum / 10;
+        if (rainSum < risks.driestRain) {
+          risks.driestRain = rainSum;
+          risks.driestTemp = meanTemp;
+        }
+        if (rainSum < 25 && meanTemp > 308.15) risks.drought++;
       }
     }
     return risks;
+  }
+
+  function oneDecimal(value) {
+    return Number.isFinite(value) ? value.toFixed(1) : "—";
   }
 
   function updateRegionalSummary(day) {
     const summaries = INDIA_REGIONS.map(key => {
       const region = REGIONS[key];
       const risks = computeRegionRisks(key, day);
-      const signal = [
+      const signals = [
         ["HEAT", risks.heat], ["HEAVY RAIN", risks.heavy], ["CLOUDBURST", risks.cloud], ["DROUGHT", risks.drought],
-      ].sort((a, b) => b[1] - a[1])[0];
+      ].filter(([, count]) => count > 0).sort((a, b) => b[1] - a[1]);
       const active = key === activeRegion ? " active" : "";
-      return `<button class="region-summary-card${active}" type="button" data-region="${key}" aria-label="Focus ${region.label}, ${signal[1]} cells flagged for ${signal[0].toLowerCase()}"><strong>${region.label}</strong><span class="region-summary-value"><span>${signal[0]}</span><b>${signal[1]}</b></span></button>`;
+      const signal = signals[0];
+      const label = signal ? signal[0] : "NO ALERTS";
+      const count = signal ? signal[1] : 0;
+      const evidence = `Peak rain ${oneDecimal(risks.peakRain)} mm/day · max T ${oneDecimal(risks.maxTemp)} K`;
+      const aria = signal
+        ? `Focus ${region.label}, ${count} cells flagged for ${label.toLowerCase()}. ${evidence}.`
+        : `Focus ${region.label}. No prototype thresholds crossed. ${evidence}.`;
+      return `<button class="region-summary-card${active}" type="button" data-region="${key}" aria-label="${aria}"><strong>${region.label}</strong><span class="region-summary-value"><span>${label}</span><b>${count}</b></span><small class="region-summary-evidence">${evidence}</small></button>`;
     }).join("");
     ui.regionalSummary.innerHTML = summaries;
     ui.regionalStatus.textContent = `DAY ${String(day + 1).padStart(2, "0")} · SHOCK BRANCH`;
@@ -845,6 +939,14 @@
     document.querySelector("#rain-count").textContent = risks.heavy.toLocaleString("en-US");
     document.querySelector("#cloud-count").textContent = risks.cloud.toLocaleString("en-US");
     document.querySelector("#drought-count").textContent = risks.drought.toLocaleString("en-US");
+    document.querySelector("#heat-evidence").textContent = `Peak t₂m ${oneDecimal(risks.maxTemp)} K · threshold 313.15 K`;
+    document.querySelector("#rain-evidence").textContent = `Peak tp ${oneDecimal(risks.peakRain)} mm/day · flag above 64.5`;
+    document.querySelector("#cloud-evidence").textContent = `Peak tp ${oneDecimal(risks.peakRain)} mm/day · flag above 115.5`;
+    document.querySelector("#drought-evidence").textContent = `Driest grid cell ${oneDecimal(risks.driestRain)} mm / 10d · mean t₂m ${oneDecimal(risks.driestTemp)} K`;
+    const activeSignals = [risks.heat, risks.heavy, risks.cloud, risks.drought].filter(count => count > 0).length;
+    ui.riskContext.textContent = `DAY ${String(day + 1).padStart(2, "0")} · ${selectedAreaLabel()} · ${activeSignals ? `${activeSignals} OF 4 INDICATORS FLAG CELLS` : "NO PROTOTYPE THRESHOLDS CROSSED"} · DROUGHT USES THE FULL 10-DAY WINDOW`;
+    ui.riskContext.classList.toggle("quiet", activeSignals === 0);
+    ui.riskContext.classList.toggle("active", activeSignals > 0);
     ui.activeRegionName.textContent = selectedAreaLabel();
     updateRegionalSummary(day);
   }
@@ -1030,6 +1132,7 @@
     }
   }
 
+  initPageAtmosphere();
   populatePlaceOptions();
   initMapViews();
   for (const [key, canvas] of [["base", ui.base], ["shock", ui.shock], ["delta", ui.delta]]) {
