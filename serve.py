@@ -29,10 +29,14 @@ app.add_middleware(
 MODEL_NAME = "monsoon-resunet"
 
 with open(STATS_PATH, "r", encoding="utf-8") as _f:
-    _STATS = json.load(_f)
-_STATIC_MAPS = np.load(STATIC_PATH).astype("f4")
+    _FILE_STATS = json.load(_f)
 
+# Prefer the exact statistics stored with the checkpoint. This prevents a newly
+# prepared ERA5 stats.json from silently changing the normalization of an older
+# checkpoint if the candidate model has not yet been promoted.
 _CKPT = torch.load(WEIGHTS_PATH, map_location="cpu", weights_only=False)
+_STATS = _CKPT.get("stats", _FILE_STATS)
+_STATIC_MAPS = np.load(STATIC_PATH).astype("f4")
 _MODEL_CFG = _CKPT.get("model_config", {"in_channels": 9, "out_channels": 6, "base_ch": 32})
 _MODEL = MonsoonResUNet(**_MODEL_CFG)
 _MODEL.load_state_dict(_CKPT["model_state_dict"])
@@ -58,23 +62,30 @@ def _doy_from_sincos(doy_sincos) -> float:
 
 
 def simulate(init_states: np.ndarray, doy_sincos, steps: int, perturbation) -> np.ndarray:
-    """init_states [3,6,32,36] physical units, oldest first. perturbation [6,32,36] delta or None.
-    Return [steps,6,32,36] physical units. doy_sincos = [sin, cos] of the day of year of init_states[-1]."""
-    x0 = init_states[-1].astype("f4", copy=True)
-    if perturbation is not None and np.any(perturbation != 0.0):
-        x0 = x0 + perturbation.astype("f4", copy=False)
+    """Forecast from [3,6,32,36] physical states, oldest first.
 
-    if not np.all(np.isfinite(x0)):
-        x0 = np.nan_to_num(x0, nan=0.0, posinf=0.0, neginf=0.0)
+    A legacy 9-channel checkpoint uses the latest state; a newly trained
+    21-channel checkpoint consumes all three states. The perturbation is a
+    physical-unit delta applied only to the latest input state.
+    """
+    history = init_states.astype("f4", copy=True)
+    if history.shape != (3, 6, 32, 36):
+        raise ValueError(f"init_states must have shape [3,6,32,36], received {history.shape}")
+    if perturbation is not None and np.any(perturbation != 0.0):
+        history[-1] = history[-1] + perturbation.astype("f4", copy=False)
+
+    if not np.all(np.isfinite(history)):
+        history = np.nan_to_num(history, nan=0.0, posinf=0.0, neginf=0.0)
 
     doy = _doy_from_sincos(doy_sincos)
     with torch.no_grad():
-        out_t = rollout_10_days(_MODEL, x0, _STATIC_MAPS, _STATS, doy, steps=steps)
+        out_t = rollout_10_days(_MODEL, history, _STATIC_MAPS, _STATS, doy, steps=steps)
 
     out = out_t.cpu().numpy().astype("f4", copy=False)
     if not np.all(np.isfinite(out)):
         out = np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
     out[:, 1] = np.maximum(out[:, 1], 0.0)
+    out[:, 5] = np.maximum(out[:, 5], 0.0)
     return out
 
 
