@@ -169,8 +169,9 @@ def rollout_10_days(
         physical = physical.clone()
         physical[:, 1] = torch.clamp(physical[:, 1], min=0.0)
         physical[:, 5] = torch.clamp(physical[:, 5], min=0.0)
-        next_norm = (physical - mean[:, 0]) / std[:, 0]
-        history = torch.cat([history[:, 1:], next_norm.unsqueeze(1)], dim=1)
+
+        current = (physical - mean) / std
+
         outputs.append(physical)
 
     result = torch.stack(outputs, dim=1)

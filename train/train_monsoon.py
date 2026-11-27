@@ -25,9 +25,9 @@ STATS_PATH = ROOT / "assets" / "stats.json"
 CKPT_PATH = ROOT / "weights" / "monsoon_unet.pt"
 CANDIDATE_CKPT_PATH = ROOT / "weights" / "monsoon_unet_3day_best.pt"
 
-# 2005-01-01 through 2019-12-31 inclusive: 15*365 + 3 leap days = 5,478.
-TRAIN_DAYS = 5478
-HISTORY_DAYS = 3
+
+TRAIN_DAYS = 5478  # First 15 years (2005-01-01 .. 2019-12-31)
+
 ROLLOUT_TRAIN_STEPS = 3
 BATCH_SIZE = int(os.environ.get("MONSOON_BATCH_SIZE", "32"))
 EPOCHS = int(os.environ.get("MONSOON_EPOCHS", "25"))
@@ -157,111 +157,39 @@ def evaluate_10day_rmse(
     """
     model.eval()
     steps = 10
-    n_win = len(val_phys) - HISTORY_DAYS - steps + 1
-    if n_win <= 0:
-        raise ValueError("validation split is too short for a 3-day history and 10-day forecast")
 
-    leads = (1, 4, 8)
-    latitudes = 6.5 + np.arange(val_phys.shape[2], dtype=np.float64)
-    lat_weights = np.cos(np.deg2rad(latitudes)).reshape(1, 1, -1, 1)
-    denominator = n_win * val_phys.shape[3] * np.sum(lat_weights)
-    model_sq = np.zeros((len(leads), 6), dtype=np.float64)
-    persistence_sq = np.zeros_like(model_sq)
+    n_win = len(val_phys) - steps
 
-    for start in range(0, n_win, 16):
-        end = min(start + 16, n_win)
-        histories = np.stack(
-            [val_phys[i : i + HISTORY_DAYS] for i in range(start, end)]
-        ).astype(np.float32, copy=False)
-        history_tensor = torch.from_numpy(histories).to(device)
-        doy = torch.from_numpy(
-            val_doy[start + HISTORY_DAYS - 1 : end + HISTORY_DAYS - 1]
-        ).to(device)
-        pred = rollout_10_days(
-            model, history_tensor, static_raw, stats, doy, steps=steps
-        ).cpu().numpy()
-        target = np.stack(
-            [val_phys[i + HISTORY_DAYS : i + HISTORY_DAYS + steps] for i in range(start, end)]
-        )
-        persistence = np.repeat(histories[:, -1:, ...], steps, axis=1)
+    preds_all = []
+    targets_all = []
+    pers_all = []
 
-        for lead_index, lead in enumerate(leads):
-            k = lead - 1
-            model_error = pred[:, k].astype(np.float64) - target[:, k].astype(np.float64)
-            pers_error = persistence[:, k].astype(np.float64) - target[:, k].astype(np.float64)
-            model_sq[lead_index] += np.sum(model_error**2 * lat_weights, axis=(0, 2, 3))
-            persistence_sq[lead_index] += np.sum(pers_error**2 * lat_weights, axis=(0, 2, 3))
+    for start in range(0, n_win, 64):
+        end = min(start + 64, n_win)
+        x0 = torch.from_numpy(val_phys[start:end]).to(device)
+        doy = torch.from_numpy(val_doy[start:end]).to(device)
+        pred = rollout_10_days(model, x0, static_raw, stats, doy, steps=steps).cpu().numpy()
 
-    model_rmse = np.sqrt(model_sq / denominator)
-    persistence_rmse = np.sqrt(persistence_sq / denominator)
-    day4_beats_persistence = bool(np.all(model_rmse[1] < persistence_rmse[1]))
+        tgt = np.stack([val_phys[i + 1 : i + 1 + steps] for i in range(start, end)], axis=0)
+        pers = np.repeat(val_phys[start:end, None, ...], steps, axis=1)
 
-    print("\nValidation latitude-weighted RMSE (all held-out 3-day windows):")
-    for lead_index, lead in enumerate(leads):
-        print(f"\nDay {lead}:")
-        for channel, name in enumerate(stats["channels"]):
-            print(
-                f"  {name:>4s}: model={model_rmse[lead_index, channel]:10.4f} | "
-                f"persistence={persistence_rmse[lead_index, channel]:10.4f}"
-            )
-    print(
-        "\nDay-4 weighted RMSE beats persistence on all six channels: "
-        f"{day4_beats_persistence}"
-    )
-    return day4_beats_persistence
+        preds_all.append(pred)
+        targets_all.append(tgt)
+        pers_all.append(pers)
 
+    preds_arr = np.concatenate(preds_all, axis=0)
+    targets_arr = np.concatenate(targets_all, axis=0)
+    pers_arr = np.concatenate(pers_all, axis=0)
 
-def warm_start_from_existing_checkpoint(model: MonsoonResUNet) -> str:
-    """Warm-start 3-day training from the committed 1-day checkpoint when possible.
+    channels = stats["channels"]
+    for lead in (1, 4, 8):
+        idx = lead - 1
+        model_rmse = np.sqrt(np.mean((preds_arr[:, idx] - targets_arr[:, idx]) ** 2, axis=(0, 2, 3)))
+        pers_rmse = np.sqrt(np.mean((pers_arr[:, idx] - targets_arr[:, idx]) ** 2, axis=(0, 2, 3)))
+        print(f"\nValidation RMSE @ Day {lead} (physical units):")
+        for c_i, name in enumerate(channels):
+            print(f"  {name:>4s}: model={model_rmse[c_i]:10.4f} | persistence={pers_rmse[c_i]:10.4f}")
 
-    The old first-layer channels are mapped to the latest weather day, static maps,
-    and seasonal channel. Newly introduced older-history channels start at zero.
-    """
-    source_path = CANDIDATE_CKPT_PATH if CANDIDATE_CKPT_PATH.exists() else CKPT_PATH
-    if not source_path.exists():
-        return "no existing checkpoint; initialized from scratch"
-    checkpoint = torch.load(source_path, map_location="cpu", weights_only=False)
-    old_config = checkpoint.get("model_config", {})
-    old_state = checkpoint.get("model_state_dict", {})
-    if (
-        old_config.get("in_channels") == 21
-        and old_config.get("out_channels") == 6
-        and old_config.get("base_ch") == 32
-    ):
-        model.load_state_dict(old_state)
-        return f"warm-started from existing 3-day candidate ({source_path.name})"
-    if old_config.get("in_channels") != 9 or "in_proj.weight" not in old_state:
-        return f"{source_path.name} is incompatible; initialized from scratch"
-
-    new_state = model.state_dict()
-    for name, value in old_state.items():
-        if name == "in_proj.weight":
-            continue
-        if name in new_state and new_state[name].shape == value.shape:
-            new_state[name] = value
-
-    old_first = old_state["in_proj.weight"]
-    new_first = torch.zeros_like(new_state["in_proj.weight"])
-    # Input order: oldest 6, middle 6, latest 6, static 2, seasonal 1.
-    new_first[:, 12:18] = old_first[:, 0:6]
-    new_first[:, 18:20] = old_first[:, 6:8]
-    new_first[:, 20:21] = old_first[:, 8:9]
-    new_state["in_proj.weight"] = new_first
-    model.load_state_dict(new_state)
-    return f"warm-started from {source_path.name}; older-history input weights initialized to zero"
-
-
-def validate_chronological_split(times: np.ndarray) -> None:
-    """Guard the exact 2005-2019 / 2020 split against accidental off-by-one errors."""
-    if len(times) <= TRAIN_DAYS:
-        raise ValueError("dataset does not extend beyond the 2005-2019 training split")
-    first = str(times[0])[:10]
-    last_train = str(times[TRAIN_DAYS - 1])[:10]
-    first_val = str(times[TRAIN_DAYS])[:10]
-    expected = ("2005-01-01", "2019-12-31", "2020-01-01")
-    actual = (first, last_train, first_val)
-    if actual != expected:
-        raise ValueError(f"unexpected chronological split dates: {actual}; expected {expected}")
 
 
 def main() -> None:

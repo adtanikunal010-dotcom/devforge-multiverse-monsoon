@@ -15,5 +15,5 @@ These rules are for the Member 2 dashboard impact panel. Use the API's physical 
 - `t2m` is in kelvin. Convert only for labels if desired: `°C = K - 273.15`. Compare using kelvin thresholds above.
 - The comparisons are strict (`>` and `<`) as written. A value equal to a threshold does not trigger that rule.
 - For the heatwave, heavy rainfall, and cloudburst counters, evaluate the selected day. The drought stress counter uses all ten forecast days.
-- Keep a distinct count for cloudburst severity; because the cloudburst threshold is higher, those cells also satisfy the heavy-rain threshold.
+- The underlying heavy-rain threshold is `tp > 64.5 mm/day`. For mutually exclusive dashboard counters, classify `64.5 < tp ≤ 115.5 mm/day` as heavy-rain-only and `tp > 115.5 mm/day` as cloudburst. The two displayed buckets together cover all heavy-rain cells without counting cloudburst cells twice.
 - These cutoffs are the project playbook's specified IMD-grounded operational rules for this prototype. They are alert heuristics for the demo, not official warnings issued by IMD.

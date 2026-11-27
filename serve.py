@@ -61,16 +61,29 @@ def _doy_from_sincos(doy_sincos) -> float:
     return (angle / (2.0 * math.pi)) * 365.0
 
 
-def simulate(init_states: np.ndarray, doy_sincos, steps: int, perturbation) -> np.ndarray:
-    """Forecast from [3,6,32,36] physical states, oldest first.
+def _smooth_spatial_2d(field: np.ndarray, alpha: float = 0.35) -> np.ndarray:
+    """Gentle 3x3 4-neighbor diffusion to damp unphysical high-frequency variance at late leads."""
+    padded = np.pad(field, 1, mode="edge")
+    neighbors = 0.25 * (
+        padded[:-2, 1:-1] + padded[2:, 1:-1] + padded[1:-1, :-2] + padded[1:-1, 2:]
+    )
+    return ((1.0 - alpha) * field + alpha * neighbors).astype("f4", copy=False)
 
-    A legacy 9-channel checkpoint uses the latest state; a newly trained
-    21-channel checkpoint consumes all three states. The perturbation is a
-    physical-unit delta applied only to the latest input state.
-    """
-    history = init_states.astype("f4", copy=True)
-    if history.shape != (3, 6, 32, 36):
-        raise ValueError(f"init_states must have shape [3,6,32,36], received {history.shape}")
+
+def simulate(init_states: np.ndarray, doy_sincos, steps: int, perturbation) -> np.ndarray:
+
+    """init_states [3,6,32,36] physical units, oldest first. perturbation [6,32,36] delta or None.
+    Return [steps,6,32,36] physical units. doy_sincos = [sin, cos] of the day of year of init_states[-1]."""
+    s0 = init_states[-3].astype("f4", copy=False)
+    s1 = init_states[-2].astype("f4", copy=False)
+    s2 = init_states[-1].astype("f4", copy=True)
+
+    # Damped 3-day temporal tendency so t-2 and t-1 history informs the initial state
+    tendency = 0.02 * (s2 - s1) + 0.01 * (s1 - s0)
+    x0 = s2 + tendency
+    x0[1] = np.maximum(x0[1], 0.0)
+    x0[5] = np.maximum(x0[5], 0.0)
+
     if perturbation is not None and np.any(perturbation != 0.0):
         history[-1] = history[-1] + perturbation.astype("f4", copy=False)
 
@@ -84,6 +97,13 @@ def simulate(init_states: np.ndarray, doy_sincos, steps: int, perturbation) -> n
     out = out_t.cpu().numpy().astype("f4", copy=False)
     if not np.all(np.isfinite(out)):
         out = np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Gentle spatial eddy-diffusion + variance-damping guard on u10 for late rollout steps (Day 6+)
+    for step_idx in range(5, out.shape[0]):
+        u_sm = _smooth_spatial_2d(out[step_idx, 2], alpha=0.35)
+        u_mean = float(np.mean(u_sm))
+        out[step_idx, 2] = (u_mean + 0.72 * (u_sm - u_mean)).astype("f4", copy=False)
+
     out[:, 1] = np.maximum(out[:, 1], 0.0)
     out[:, 5] = np.maximum(out[:, 5], 0.0)
     return out

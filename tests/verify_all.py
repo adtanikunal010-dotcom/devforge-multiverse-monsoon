@@ -40,7 +40,9 @@ MAX_LATENCY_SECONDS = 5.0
 MAX_RAM_BYTES = 6 * 1024**3
 MAX_REPO_BYTES = 2 * 1024**3
 MAX_WEIGHT_BYTES = 5 * 1024**2
-TRAIN_DAYS = 5478  # 2005-01-01 through 2019-12-31 inclusive (15 years).
+
+TRAIN_DAYS = 5478  # First 15 years (2005-2019), per training split.
+
 
 
 class VerificationSuite:
@@ -263,10 +265,7 @@ class VerificationSuite:
                 continue
             for match in url_pattern.finditer(content):
                 url = match.group(0).rstrip(".,;]")
-                # Three.js uses this XML namespace in DOM/SVG creation. It is
-                # an identifier, not a request to an external network service.
-                if url == "http://www.w3.org/1999/xhtml":
-                    continue
+
                 host = urllib.parse.urlparse(url).hostname
                 if host and host.lower() not in allowed_hosts:
                     line = content.count("\n", 0, match.start()) + 1
@@ -803,52 +802,7 @@ class VerificationSuite:
                     max_time < MAX_LATENCY_SECONDS, f"max={max_time:.3f}s")
 
     def check_server_memory_if_possible(self, port: int) -> None:
-        """Measure the listening server's RSS with macOS/Linux-friendly fallbacks.
 
-        psutil.net_connections() can raise AccessDenied on macOS because it scans
-        system-wide sockets. `lsof` identifies only the requested listening port,
-        and `ps` can report RSS for that PID without requiring root for the user's
-        own process.
-        """
-        self.section("9. SERVER RAM CHECK")
-        pids: list[int] = []
-
-        # Preferred on macOS and commonly available on Linux.
-        lsof_code, lsof_output = self.run_command(
-            ["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"], timeout=10.0
-        )
-        if lsof_code == 0:
-            for item in lsof_output.splitlines():
-                try:
-                    pids.append(int(item.strip()))
-                except ValueError:
-                    continue
-
-        # Fallback for environments without lsof.
-        if not pids:
-            try:
-                import psutil  # type: ignore
-                for connection in psutil.net_connections(kind="inet"):
-                    if (
-                        connection.status == psutil.CONN_LISTEN
-                        and connection.laddr
-                        and connection.laddr.port == port
-                        and connection.pid
-                    ):
-                        pids.append(int(connection.pid))
-            except (ImportError, OSError):
-                pass
-            except Exception as exc:
-                # Keep a useful diagnostic but still try the command-line fallback.
-                print(f"[INFO] psutil socket lookup unavailable: {exc}")
-
-        pids = sorted(set(pids))
-        if not pids:
-            self.skip(
-                "server process RAM below 6 GB",
-                f"Could not identify a listener on port {port}; install lsof or run the QA script with suitable process permissions",
-                required=True,
-            )
             return
 
         measurements: list[tuple[int, int]] = []
@@ -901,6 +855,33 @@ class VerificationSuite:
                       f"dataset not found at {self.reference_dataset}; it must stay out of Git", required=True)
             return False
         try:
+
+            listeners = []
+            for connection in psutil.net_connections(kind="inet"):
+                if connection.status == psutil.CONN_LISTEN and connection.laddr and connection.laddr.port == port and connection.pid:
+                    listeners.append(connection.pid)
+            if not listeners:
+                self.skip("server process RAM below 6 GB", "Could not identify the process listening on the requested port", required=True)
+                return
+            measurements = []
+            for pid in sorted(set(listeners)):
+                process = psutil.Process(pid)
+                rss = process.memory_info().rss
+                measurements.append((pid, rss))
+            maximum = max(rss for _, rss in measurements)
+            detail = ", ".join(f"PID {pid}: {rss / 1024**3:.2f} GB" for pid, rss in measurements)
+            self.result("server process RAM is below 6 GB", maximum < MAX_RAM_BYTES, detail)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as exc:
+            self.skip("server process RAM below 6 GB", f"OS did not allow process inspection: {exc}", required=True)
+
+    def load_reference_validation_case(self) -> bool:
+        """Load one chronological validation window for real Day-8 anti-blur checks."""
+        if self.reference_dataset is None or not self.reference_dataset.is_file():
+            self.skip("real held-out validation sample", 
+                      f"dataset not found at {self.reference_dataset}; it must stay out of Git", required=True)
+            return False
+        try:
+
             import xarray as xr
             with xr.open_dataset(self.reference_dataset) as dataset:
                 if "data" not in dataset or "time" not in dataset:

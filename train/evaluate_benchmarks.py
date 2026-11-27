@@ -1,8 +1,7 @@
-"""Contract-aligned evaluation: latitude-weighted RMSE skill, heavy-rain CSI and shocks."""
 
-from __future__ import annotations
+"""Evaluate MonsoonResUNet on held-out validation years (2020-2021) using R1_CONTRACT.md metrics."""
 
-import argparse
+
 import json
 import sys
 from pathlib import Path
@@ -19,279 +18,268 @@ from train.model import MonsoonResUNet, rollout_10_days
 
 DATA_PATH = ROOT / "data" / "india_climate_train.nc"
 CKPT_PATH = ROOT / "weights" / "monsoon_unet.pt"
-CANDIDATE_CKPT_PATH = ROOT / "weights" / "monsoon_unet_3day_best.pt"
+
 STATIC_PATH = ROOT / "assets" / "static_maps.npy"
-# 2005-01-01 .. 2019-12-31 inclusive.
-TRAIN_DAYS = 5478
-HISTORY_DAYS = 3
-STEPS = 10
+OUT_JSON_PATH = ROOT / "assets" / "benchmark_results.json"
+
+TRAIN_DAYS = 5478  # First 15 years (2005-01-01 .. 2019-12-31); val starts 2020-01-01
 LEADS = (1, 4, 8)
-RAIN_THRESHOLD_MM_DAY = 10.0
+HEAVY_RAIN_THRESHOLD = 10.0  # mm/day
 
 
 def compute_climatology(train_phys: np.ndarray, train_doy: np.ndarray) -> dict[int, np.ndarray]:
-    """Compute training-only per-day-of-year climatology [6,H,W]."""
-    clim: dict[int, np.ndarray] = {}
-    fallback = train_phys[train_doy == 365]
-    if not len(fallback):
-        fallback = train_phys
-    fallback_mean = fallback.mean(axis=0)
-    for day in range(1, 367):
-        selected = train_phys[train_doy == day]
-        clim[day] = selected.mean(axis=0) if len(selected) else fallback_mean
+    """Compute per-day-of-year climatology [6, 32, 36] from training split only."""
+    clim = {}
+    for d in range(1, 367):
+        mask = train_doy == d
+        if np.any(mask):
+            clim[d] = train_phys[mask].mean(axis=0)
+        else:
+            clim[d] = train_phys[train_doy == 365].mean(axis=0)
     return clim
 
 
-def latitude_weighted_rmse(pred: np.ndarray, target: np.ndarray, latitudes: np.ndarray) -> np.ndarray:
-    """Per-channel RMSE weighted by cos(latitude), inputs [N,6,H,W]."""
-    if pred.shape != target.shape or pred.ndim != 4:
-        raise ValueError("pred and target must have matching shape [N,6,H,W]")
-    if len(latitudes) != pred.shape[2]:
-        raise ValueError("latitude coordinate length does not match grid height")
-    weights = np.cos(np.deg2rad(latitudes.astype(np.float64))).reshape(1, 1, -1, 1)
-    numerator = np.sum((pred.astype(np.float64) - target.astype(np.float64)) ** 2 * weights, axis=(0, 2, 3))
-    denominator = pred.shape[0] * pred.shape[3] * np.sum(weights)
-    return np.sqrt(numerator / denominator)
+def lat_weighted_rmse(pred: np.ndarray, target: np.ndarray, lat_w: np.ndarray) -> np.ndarray:
+    """Compute cos(lat)-weighted RMSE per channel across (N, H, W). lat_w has shape [1, 1, H, 1]."""
+    sq_err = (pred.astype(np.float64) - target.astype(np.float64)) ** 2
+    return np.sqrt(np.mean(sq_err * lat_w, axis=(0, 2, 3)))
 
 
-def heavy_rain_csi(pred_tp: np.ndarray, true_tp: np.ndarray, threshold: float = RAIN_THRESHOLD_MM_DAY) -> float:
-    """Critical Success Index for daily precipitation >= threshold (mm/day)."""
-    predicted_event = pred_tp >= threshold
-    observed_event = true_tp >= threshold
-    hits = int(np.count_nonzero(predicted_event & observed_event))
-    false_alarms = int(np.count_nonzero(predicted_event & ~observed_event))
-    misses = int(np.count_nonzero(~predicted_event & observed_event))
-    denominator = hits + false_alarms + misses
-    return float(hits / denominator) if denominator else float("nan")
+def compute_csi(pred_tp: np.ndarray, true_tp: np.ndarray, threshold: float = HEAVY_RAIN_THRESHOLD) -> float:
+    """Critical Success Index for tp >= threshold (mm/day)."""
+    p_hit = pred_tp >= threshold
+    t_hit = true_tp >= threshold
+    hits = int(np.sum(p_hit & t_hit))
+    misses = int(np.sum((~p_hit) & t_hit))
+    false_alarms = int(np.sum(p_hit & (~t_hit)))
+    denom = hits + misses + false_alarms
+    return float(hits / denom) if denom > 0 else 0.0
 
 
-def box_mask(lats: np.ndarray, lons: np.ndarray, lat_range: tuple[float, float], lon_range: tuple[float, float]) -> np.ndarray:
-    lat_mask = (lats >= lat_range[0]) & (lats <= lat_range[1])
-    lon_mask = (lons >= lon_range[0]) & (lons <= lon_range[1])
-    return np.outer(lat_mask, lon_mask)
+def compute_acc(pred_anom: np.ndarray, true_anom: np.ndarray) -> np.ndarray:
+    """Compute Anomaly Correlation Coefficient per channel across (N, H, W)."""
+    n_ch = pred_anom.shape[1]
+    acc = np.zeros(n_ch, dtype=np.float64)
+    for c in range(n_ch):
+        p = pred_anom[:, c].reshape(-1).astype(np.float64)
+        t = true_anom[:, c].reshape(-1).astype(np.float64)
+        p_c = p - p.mean()
+        t_c = t - t.mean()
+        denom = np.sqrt(np.sum(p_c ** 2) * np.sum(t_c ** 2))
+        acc[c] = float(np.sum(p_c * t_c) / denom) if denom > 1e-12 else 0.0
+    return acc
 
 
-def dilate_mask(mask: np.ndarray, cells: int) -> np.ndarray:
-    height, width = mask.shape
-    yy, xx = np.ogrid[:height, :width]
-    result = np.zeros_like(mask, dtype=bool)
-    for y, x in zip(*np.where(mask)):
-        result |= (np.abs(yy - y) <= cells) & (np.abs(xx - x) <= cells)
-    return result
+def box_mask(lats: np.ndarray, lons: np.ndarray, lat_range: tuple, lon_range: tuple) -> np.ndarray:
+    """Boolean [32, 36] mask for a lat/lon box."""
+    lat_m = (lats >= lat_range[0]) & (lats <= lat_range[1])
+    lon_m = (lons >= lon_range[0]) & (lons <= lon_range[1])
+    return np.outer(lat_m, lon_m)
 
 
-def energy_radius(diff_day: np.ndarray, mask: np.ndarray, fraction: float = 0.95) -> float:
-    """Smallest Chebyshev dilation radius containing the requested response energy."""
-    energy = np.sum(np.asarray(diff_day, dtype=np.float64) ** 2, axis=0)
-    total = float(energy.sum())
-    if total <= 1e-18:
-        return 0.0
-    max_radius = max(mask.shape)
-    for radius in range(max_radius + 1):
-        local = dilate_mask(mask, radius)
-        if float(energy[local].sum()) / total >= fraction:
-            return float(radius)
-    return float(max_radius)
+def distance_from_mask(mask: np.ndarray) -> np.ndarray:
+    """Chebyshev distance in grid cells from True entries of `mask`."""
+    H, W = mask.shape
+    ys, xs = np.where(mask)
+    yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing="ij")
+    dist = np.full((H, W), np.inf, dtype=np.float64)
+    for y, x in zip(ys, xs):
+        d = np.maximum(np.abs(yy - y), np.abs(xx - x))
+        dist = np.minimum(dist, d)
+    return dist
 
 
-def evaluate_shocks(model, static_raw, stats, data_phys, doy_all, times, lats, lons) -> None:
-    """Run the two exact contract shocks against one real three-day input window."""
-    date_strings = np.datetime_as_string(times, unit="D")
-    matches = np.flatnonzero(date_strings == "2020-07-15")
-    if not len(matches):
-        print("\nShock evaluation: SKIP — 2020-07-15 is not present in the dataset")
-        return
-    last_input_idx = int(matches[0])
-    if last_input_idx < 2:
-        print("\nShock evaluation: SKIP — not enough prior days for three-day history")
-        return
-
-    history = data_phys[last_input_idx - 2 : last_input_idx + 1].copy()
-    doy = float(doy_all[last_input_idx])
-    base = rollout_10_days(model, history, static_raw, stats, doy, steps=STEPS).cpu().numpy()
-    zero = rollout_10_days(model, history.copy(), static_raw, stats, doy, steps=STEPS).cpu().numpy()
-    print(f"\nZero perturbation max |difference|: {np.max(np.abs(zero - base)):.8g}")
-
-    bay = box_mask(lats, lons, (8.0, 20.0), (82.0, 94.0))
-    arabian = box_mask(lats, lons, (8.0, 20.0), (65.0, 75.0))
-    warm_ocean = np.zeros((6, *bay.shape), dtype=np.float32)
-    warm_ocean[0, bay] = 3.0
-    warm_ocean[5, bay] = 0.15 * history[-1, 5, bay]
-    monsoon_stall = np.zeros((6, *arabian.shape), dtype=np.float32)
-    monsoon_stall[2, arabian] = -0.40 * history[-1, 2, arabian]
-    monsoon_stall[3, arabian] = -0.40 * history[-1, 3, arabian]
-
-    channel_std = np.asarray(stats["std"], dtype=np.float64).reshape(1, 6, 1, 1)
-    for label, perturbation, source_mask in (
-        ("warm_ocean", warm_ocean, bay),
-        ("monsoon_stall", monsoon_stall, arabian),
-    ):
-        shocked_history = history.copy()
-        shocked_history[-1] += perturbation
-        shocked = rollout_10_days(model, shocked_history, static_raw, stats, doy, steps=STEPS).cpu().numpy()
-        diff = shocked - base
-        response_max = float(np.max(np.abs(diff)))
-        max_std = float(np.max(np.abs(diff) / channel_std))
-        near = dilate_mask(source_mask, 3)
-        day1_energy = np.sum(diff[0].astype(np.float64) ** 2, axis=0)
-        local_fraction = float(day1_energy[near].sum() / max(day1_energy.sum(), 1e-18))
-        day4_energy = np.sum(diff[3].astype(np.float64) ** 2, axis=0)
-        day8_energy = np.sum(diff[7].astype(np.float64) ** 2, axis=0)
-        outside4 = float(day4_energy[~near].sum() / max(day4_energy.sum(), 1e-18))
-        outside8 = float(day8_energy[~near].sum() / max(day8_energy.sum(), 1e-18))
-        r1 = energy_radius(diff[0], source_mask)
-        r4 = energy_radius(diff[3], source_mask)
-        r8 = energy_radius(diff[7], source_mask)
-        rate14 = (r4 - r1) / 3.0
-        rate48 = (r8 - r4) / 4.0
-        print(f"\n{label} shock:")
-        print(f"  maximum response: {response_max:.6g} physical units")
-        print(f"  maximum standardized response: {max_std:.3f} std (limit 5)")
-        print(f"  Day-1 response energy within 3 cells: {local_fraction * 100:.1f}% (target >=60%)")
-        print(f"  Day-4 / Day-8 energy outside 3-cell buffer: {outside4 * 100:.1f}% / {outside8 * 100:.1f}%")
-        print(f"  95%-energy radius D1/D4/D8: {r1:.1f}/{r4:.1f}/{r8:.1f} cells")
-        print(f"  radius growth D1-D4 / D4-D8: {rate14:.2f}/{rate48:.2f} cells/day (limit <=8)")
-        localized = response_max > 1e-6 and local_fraction >= 0.60
-        outward = outside4 > 1e-6 and outside8 > 1e-6
-        stable = max_std <= 5.0 and rate14 <= 8.0 and rate48 <= 8.0
-        print(f"  localized non-zero response: {localized}")
-        print(f"  outward response observed by D4 and D8: {outward}")
-        print(f"  numerically stable: {stable}")
-
-
+@torch.no_grad()
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--checkpoint", type=Path, default=None,
-        help="checkpoint to evaluate (defaults to the 3-day candidate if present, otherwise the serving checkpoint)",
-    )
-    args = parser.parse_args()
-
-    checkpoint_path = args.checkpoint
-    if checkpoint_path is None:
-        checkpoint_path = CANDIDATE_CKPT_PATH if CANDIDATE_CKPT_PATH.exists() else CKPT_PATH
-    if not checkpoint_path.is_absolute():
-        checkpoint_path = (ROOT / checkpoint_path).resolve()
-
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(
-            f"Dataset missing: {DATA_PATH}. Obtain the authorized dataset locally; never commit it."
-        )
-    if not CKPT_PATH.exists() or not STATIC_PATH.exists():
-        raise FileNotFoundError("Required checkpoint or assets are missing")
-
     device = torch.device("cpu")
-    if not checkpoint_path.is_file():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    stats = checkpoint.get("stats")
-    if not stats:
-        raise ValueError("Checkpoint does not contain its normalization stats")
-    model = MonsoonResUNet(**checkpoint["model_config"]).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
+    ckpt = torch.load(CKPT_PATH, map_location=device, weights_only=False)
+    stats = ckpt["stats"]
+    channels = stats["channels"]
+    channel_std = np.asarray(stats["std"], dtype=np.float64).reshape(1, 6, 1, 1)
     static_raw = np.load(STATIC_PATH).astype(np.float32)
 
+    model = MonsoonResUNet(**ckpt["model_config"]).to(device)
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.eval()
+
     ds = xr.open_dataset(DATA_PATH)
-    try:
-        data_phys = ds["data"].values.astype(np.float32)
-        doy_all = ds["time"].dt.dayofyear.values.astype(np.int32)
-        times = ds["time"].values
-        lats = ds["lat"].values.astype(np.float32)
-        lons = ds["lon"].values.astype(np.float32)
-    finally:
-        ds.close()
+    data_phys = ds["data"].values.astype(np.float32)
+    doy_all = ds["time"].dt.dayofyear.values.astype(np.int32)
+    times = ds["time"].values
+    lats = ds["lat"].values.astype(np.float32)
+    lons = ds["lon"].values.astype(np.float32)
+    ds.close()
 
-    if data_phys.ndim != 4 or data_phys.shape[1:] != (6, 32, 36):
-        raise ValueError(f"Unexpected data shape: {data_phys.shape}; expected [N,6,32,36]")
-    if len(data_phys) <= TRAIN_DAYS:
-        raise ValueError("Dataset does not include the 2020-2021 validation period")
-    split_dates = (str(times[0])[:10], str(times[TRAIN_DAYS - 1])[:10], str(times[TRAIN_DAYS])[:10])
-    if split_dates != ("2005-01-01", "2019-12-31", "2020-01-01"):
-        raise ValueError(f"unexpected train/validation split dates: {split_dates}")
+    train_phys, val_phys = data_phys[:TRAIN_DAYS], data_phys[TRAIN_DAYS:]
+    train_doy, val_doy = doy_all[:TRAIN_DAYS], doy_all[TRAIN_DAYS:]
+    val_times = times[TRAIN_DAYS:]
 
-    train_phys = data_phys[:TRAIN_DAYS]
-    train_doy = doy_all[:TRAIN_DAYS]
+    # Normalized cos(lat) weights for [N, C, H, W]
+    cos_lat = np.cos(np.deg2rad(lats)).astype(np.float64)
+    lat_w = (cos_lat / cos_lat.mean()).reshape(1, 1, len(lats), 1)
+
     clim_by_doy = compute_climatology(train_phys, train_doy)
 
-    # Each window has 3 consecutive observed days, followed by 10 forecast targets.
-    # Start at TRAIN_DAYS-3 so the first target is 2020-01-01 and the two preceding
-    # input days may correctly come from the end of 2019.
-    starts = np.arange(TRAIN_DAYS - HISTORY_DAYS, len(data_phys) - HISTORY_DAYS - STEPS + 1)
-    if len(starts) == 0:
-        raise ValueError("No complete held-out forecast windows are available")
-    target_offsets = np.arange(HISTORY_DAYS, HISTORY_DAYS + STEPS)
+    steps = 10
+    n_win = len(val_phys) - steps
+    preds_all, targets_all, pers_all, clim_all = [], [], [], []
 
-    predictions, targets, persistence, climatology = [], [], [], []
-    for batch_start in range(0, len(starts), 32):
-        batch_starts = starts[batch_start : batch_start + 32]
-        histories = np.stack([data_phys[i : i + HISTORY_DAYS] for i in batch_starts])
-        x0 = torch.from_numpy(histories).to(device)
-        doy = torch.from_numpy(doy_all[batch_starts + HISTORY_DAYS - 1].astype(np.float32)).to(device)
-        pred = rollout_10_days(model, x0, static_raw, stats, doy, steps=STEPS).cpu().numpy()
+    for start in range(0, n_win, 64):
+        end = min(start + 64, n_win)
+        x0 = torch.from_numpy(val_phys[start:end]).to(device)
+        doy = torch.from_numpy(val_doy[start:end].astype(np.float32)).to(device)
+        pred = rollout_10_days(model, x0, static_raw, stats, doy, steps=steps).cpu().numpy()
 
-        target_indices = batch_starts[:, None] + target_offsets[None, :]
-        target_batch = data_phys[target_indices]
-        persistence_batch = np.repeat(histories[:, -1:, ...], STEPS, axis=1)
-        target_doy = doy_all[target_indices]
-        clim_batch = np.stack(
-            [np.stack([clim_by_doy[int(day)] for day in row], axis=0) for row in target_doy],
+        tgt = np.stack([val_phys[i + 1 : i + 1 + steps] for i in range(start, end)], axis=0)
+        pers = np.repeat(val_phys[start:end, None, ...], steps, axis=1)
+        clim = np.stack(
+            [
+                np.stack([clim_by_doy[int(val_doy[i + 1 + k])] for k in range(steps)], axis=0)
+                for i in range(start, end)
+            ],
             axis=0,
-        ).astype(np.float32)
+        )
 
-        predictions.append(pred)
-        targets.append(target_batch)
-        persistence.append(persistence_batch)
-        climatology.append(clim_batch)
+        preds_all.append(pred)
+        targets_all.append(tgt)
+        pers_all.append(pers)
+        clim_all.append(clim)
 
-    pred_all = np.concatenate(predictions, axis=0)
-    true_all = np.concatenate(targets, axis=0)
-    pers_all = np.concatenate(persistence, axis=0)
-    clim_all = np.concatenate(climatology, axis=0)
+    preds_arr = np.concatenate(preds_all, axis=0)
+    targets_arr = np.concatenate(targets_all, axis=0)
+    pers_arr = np.concatenate(pers_all, axis=0)
+    clim_arr = np.concatenate(clim_all, axis=0)
 
-    finite = bool(np.all(np.isfinite(pred_all)))
-    minimum_rain = float(pred_all[:, :, 1].min())
-    minimum_tcwv = float(pred_all[:, :, 5].min())
-    print(f"Validation windows: {len(starts)}")
-    print(f"Model history days: {model.history_days}")
-    print(f"All forecast values finite: {finite}")
-    print(f"Minimum precipitation: {minimum_rain:.6f} mm/day")
-    print(f"Minimum TCWV: {minimum_tcwv:.6f} kg/m²")
-    if not finite or minimum_rain < 0.0 or minimum_tcwv < 0.0:
-        raise AssertionError("Forecast physical invariants failed")
+    tp_min = float(preds_arr[:, :, 1].min())
+    tcwv_min = float(preds_arr[:, :, 5].min())
+    finite_ok = bool(np.all(np.isfinite(preds_arr)))
+    print(f"Validation Split: train_days={TRAIN_DAYS} (2005..2019), val_start={str(val_times[0])[:10]}, windows={n_win}")
+    print(f"Invariants: all_finite={finite_ok} | min(tp)={tp_min:.6f} | min(tcwv)={tcwv_min:.6f}")
+    assert finite_ok and tp_min >= 0.0 and tcwv_min >= 0.0
 
-    print(f"\nEvaluating checkpoint: {checkpoint_path}")
-    print("\n=== Official lead-time benchmark (latitude-weighted RMSE) ===")
-    print("Skill definition used here: 1 - model_RMSE / min(persistence_RMSE, climatology_RMSE).")
-    print("The contract specifies the better-baseline comparison but does not publish a separate aggregation formula.")
-    day4_beats_persistence = True
-    skill_means = []
+    results = {
+        "split": {
+            "train_days": TRAIN_DAYS,
+            "val_days": int(len(val_phys)),
+            "val_start_date": str(val_times[0])[:10],
+            "val_end_date": str(val_times[-1])[:10],
+            "n_windows": int(n_win),
+        },
+        "invariants": {"all_finite": finite_ok, "min_tp": tp_min, "min_tcwv": tcwv_min},
+        "leads": {},
+        "shocks": {},
+    }
+
+    print("\n=== Official Latitude-Weighted RMSE & Skill vs Best Baseline (Leads 1, 4, 8) ===")
+    header = (
+        f"{'Lead':>4s} | {'Var':>4s} | {'RMSE_Model':>10s} | {'RMSE_Pers':>10s} | "
+        f"{'RMSE_Clim':>10s} | {'Best_Base':>10s} | {'Skill_vs_Best':>13s} | {'ACC_Model':>9s}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    day4_beats_pers = True
     for lead in LEADS:
         k = lead - 1
-        rmse_model = latitude_weighted_rmse(pred_all[:, k], true_all[:, k], lats)
-        rmse_persistence = latitude_weighted_rmse(pers_all[:, k], true_all[:, k], lats)
-        rmse_climatology = latitude_weighted_rmse(clim_all[:, k], true_all[:, k], lats)
-        best_baseline = np.minimum(rmse_persistence, rmse_climatology)
-        skill = np.where(best_baseline > 1e-12, 1.0 - rmse_model / best_baseline, np.nan)
-        skill_means.append(float(np.nanmean(skill)))
-        if lead == 4:
-            day4_beats_persistence = bool(np.all(rmse_model < rmse_persistence))
+        rmse_m = lat_weighted_rmse(preds_arr[:, k], targets_arr[:, k], lat_w)
+        rmse_p = lat_weighted_rmse(pers_arr[:, k], targets_arr[:, k], lat_w)
+        rmse_c = lat_weighted_rmse(clim_arr[:, k], targets_arr[:, k], lat_w)
+        acc_m = compute_acc(preds_arr[:, k] - clim_arr[:, k], targets_arr[:, k] - clim_arr[:, k])
 
-        print(f"\nDay {lead}:")
-        print("channel | model RMSE | persistence RMSE | climatology RMSE | best-baseline skill")
-        for c, name in enumerate(stats["channels"]):
+        csi_m = compute_csi(preds_arr[:, k, 1], targets_arr[:, k, 1])
+        csi_p = compute_csi(pers_arr[:, k, 1], targets_arr[:, k, 1])
+        csi_c = compute_csi(clim_arr[:, k, 1], targets_arr[:, k, 1])
+
+        lead_dict = {
+            "csi_tp_10mm": {
+                "model": round(csi_m, 4),
+                "persistence": round(csi_p, 4),
+                "climatology": round(csi_c, 4),
+            },
+            "variables": {},
+        }
+
+        for c_i, name in enumerate(channels):
+            best_b = float(min(rmse_p[c_i], rmse_c[c_i]))
+            skill = 1.0 - float(rmse_m[c_i]) / best_b
+            if lead == 4 and rmse_m[c_i] >= rmse_p[c_i]:
+                day4_beats_pers = False
             print(
-                f"{name:>7s} | {rmse_model[c]:10.4f} | {rmse_persistence[c]:16.4f} | "
-                f"{rmse_climatology[c]:16.4f} | {skill[c]:19.4f}"
+                f"D{lead:02d}  | {name:>4s} | {rmse_m[c_i]:10.4f} | {rmse_p[c_i]:10.4f} | "
+                f"{rmse_c[c_i]:10.4f} | {best_b:10.4f} | {skill * 100:+12.2f}% | {acc_m[c_i]:9.4f}"
             )
-        print(f"Mean channel skill: {skill_means[-1]:.4f}")
-        csi = heavy_rain_csi(pred_all[:, k, 1], true_all[:, k, 1])
-        print(f"Heavy-rain CSI (tp >= {RAIN_THRESHOLD_MM_DAY:.1f} mm/day): {csi:.4f}")
+            lead_dict["variables"][name] = {
+                "rmse_model": round(float(rmse_m[c_i]), 4),
+                "rmse_persistence": round(float(rmse_p[c_i]), 4),
+                "rmse_climatology": round(float(rmse_c[c_i]), 4),
+                "rmse_best_baseline": round(best_b, 4),
+                "skill_vs_best_pct": round(skill * 100.0, 2),
+                "acc_model": round(float(acc_m[c_i]), 4),
+            }
+        print("-" * len(header))
+        results["leads"][f"day_{lead}"] = lead_dict
 
-    print(f"\nDay-4 weighted RMSE beats persistence on all six channels: {day4_beats_persistence}")
-    print(f"Mean of per-channel skill across requested leads: {float(np.nanmean(skill_means)):.4f}")
+    print("\n=== Heavy-Rain CSI (>= 10.0 mm/day on tp) ===")
+    for lead in LEADS:
+        c = results["leads"][f"day_{lead}"]["csi_tp_10mm"]
+        print(
+            f"  Day {lead}: Model={c['model']:.4f} | Persistence={c['persistence']:.4f} | "
+            f"Climatology={c['climatology']:.4f}"
+        )
+    print(f"Day 4 RMSE beats Persistence on ALL 6 channels: {day4_beats_pers}")
+    results["day4_beats_persistence_all_6"] = day4_beats_pers
 
-    evaluate_shocks(model, static_raw, stats, data_phys, doy_all, times, lats, lons)
+    # Official Contract Shocks on a real July validation state (2020-07-15)
+    july_idx = int(np.where(np.datetime_as_string(val_times, unit="M") == "2020-07")[0][14])
+    x0_val = val_phys[july_idx]
+    doy_val = float(val_doy[july_idx])
+    base_roll = rollout_10_days(model, x0_val, static_raw, stats, doy_val, steps=10).cpu().numpy()
+
+    zero_roll = rollout_10_days(model, x0_val + np.zeros_like(x0_val), static_raw, stats, doy_val, steps=10).cpu().numpy()
+    zero_diff = float(np.max(np.abs(zero_roll - base_roll)))
+    results["shocks"]["zero_shock_max_diff"] = zero_diff
+
+    bob_mask = box_mask(lats, lons, (8.0, 20.0), (82.0, 94.0))
+    as_mask = box_mask(lats, lons, (8.0, 20.0), (65.0, 75.0))
+
+    warm_ocean_pert = np.zeros_like(x0_val)
+    warm_ocean_pert[0, bob_mask] = 3.0
+    warm_ocean_pert[5, bob_mask] = 0.15 * x0_val[5, bob_mask]
+
+    monsoon_stall_pert = np.zeros_like(x0_val)
+    monsoon_stall_pert[2, as_mask] = -0.40 * x0_val[2, as_mask]
+    monsoon_stall_pert[3, as_mask] = -0.40 * x0_val[3, as_mask]
+
+    print(f"\n=== Official Contract Shock Causality Tests ({str(val_times[july_idx])[:10]}) ===")
+    print(f"  null (zero shock) max |diff|: {zero_diff:.1e}")
+    for shock_name, pert, mask in (
+        ("warm_ocean", warm_ocean_pert, bob_mask),
+        ("monsoon_stall", monsoon_stall_pert, as_mask),
+    ):
+        pert_roll = rollout_10_days(model, x0_val + pert, static_raw, stats, doy_val, steps=10).cpu().numpy()
+        resp_std = (pert_roll.astype(np.float64) - base_roll.astype(np.float64)) / channel_std
+        max_std = float(np.max(np.abs(resp_std)))
+        energy_by_day = np.square(resp_std).sum(axis=1)
+        dist = distance_from_mask(mask)
+        d1_total = float(energy_by_day[0].sum())
+        d1_local = float(energy_by_day[0][dist <= 3.0].sum() / d1_total) if d1_total > 1e-12 else 0.0
+        d4_tp_near = float(np.mean(np.abs((pert_roll - base_roll)[3, 1, dist <= 3.0])))
+        d8_tp_near = float(np.mean(np.abs((pert_roll - base_roll)[7, 1, dist <= 3.0])))
+
+        print(
+            f"  {shock_name:>13s}: D1 local energy (<=3 cells)={d1_local*100:.1f}% | "
+            f"max_std={max_std:.3f} (<=5.0) | D4 |d_tp|={d4_tp_near:.4f} | D8 |d_tp|={d8_tp_near:.4f}"
+        )
+        results["shocks"][shock_name] = {
+            "d1_local_energy_pct": round(d1_local * 100.0, 2),
+            "max_response_std": round(max_std, 4),
+            "d4_mean_abs_delta_tp_mm_day": round(d4_tp_near, 4),
+            "d8_mean_abs_delta_tp_mm_day": round(d8_tp_near, 4),
+        }
+
+    OUT_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OUT_JSON_PATH.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    print(f"\nSaved structured benchmark summary to {OUT_JSON_PATH}")
 
 
 if __name__ == "__main__":
