@@ -40,7 +40,9 @@ MAX_LATENCY_SECONDS = 5.0
 MAX_RAM_BYTES = 6 * 1024**3
 MAX_REPO_BYTES = 2 * 1024**3
 MAX_WEIGHT_BYTES = 5 * 1024**2
+
 TRAIN_DAYS = 5478  # First 15 years (2005-2019), per training split.
+
 
 
 class VerificationSuite:
@@ -263,6 +265,7 @@ class VerificationSuite:
                 continue
             for match in url_pattern.finditer(content):
                 url = match.group(0).rstrip(".,;]")
+
                 host = urllib.parse.urlparse(url).hostname
                 if host and host.lower() not in allowed_hosts:
                     line = content.count("\n", 0, match.start()) + 1
@@ -799,14 +802,60 @@ class VerificationSuite:
                     max_time < MAX_LATENCY_SECONDS, f"max={max_time:.3f}s")
 
     def check_server_memory_if_possible(self, port: int) -> None:
-        self.section("9. OPTIONAL SERVER RAM CHECK")
-        try:
-            import psutil  # type: ignore
-        except ImportError:
-            self.skip("server process RAM below 6 GB", "psutil is listed in requirements.txt; install project requirements", required=True)
+
             return
 
+        measurements: list[tuple[int, int]] = []
+        for pid in pids:
+            rss_bytes = None
+            # `ps -o rss=` reports resident memory in KiB on macOS and Linux.
+            ps_code, ps_output = self.run_command(
+                ["ps", "-o", "rss=", "-p", str(pid)], timeout=10.0
+            )
+            if ps_code == 0:
+                try:
+                    rss_kib = int(ps_output.strip().splitlines()[-1])
+                    if rss_kib > 0:
+                        rss_bytes = rss_kib * 1024
+                except (ValueError, IndexError):
+                    rss_bytes = None
+
+            if rss_bytes is None:
+                try:
+                    import psutil  # type: ignore
+                    rss_bytes = int(psutil.Process(pid).memory_info().rss)
+                except Exception:
+                    rss_bytes = None
+
+            if rss_bytes is not None:
+                measurements.append((pid, rss_bytes))
+
+        if not measurements:
+            self.skip(
+                "server process RAM below 6 GB",
+                f"Found PID(s) {pids}, but neither ps nor psutil could read their RSS",
+                required=True,
+            )
+            return
+
+        maximum = max(rss for _, rss in measurements)
+        detail = ", ".join(
+            f"PID {pid}: {rss / (1024 ** 3):.2f} GB" for pid, rss in measurements
+        )
+        self.result(
+            "server process RAM is below 6 GB",
+            maximum < MAX_RAM_BYTES,
+            detail,
+        )
+
+    def load_reference_validation_case(self) -> bool:
+        """Load one chronological validation window for real Day-8 anti-blur checks."""
+        if self.reference_dataset is None or not self.reference_dataset.is_file():
+            self.skip("real held-out validation sample", 
+                      f"dataset not found at {self.reference_dataset}; it must stay out of Git", required=True)
+            return False
         try:
+
             listeners = []
             for connection in psutil.net_connections(kind="inet"):
                 if connection.status == psutil.CONN_LISTEN and connection.laddr and connection.laddr.port == port and connection.pid:
@@ -832,6 +881,7 @@ class VerificationSuite:
                       f"dataset not found at {self.reference_dataset}; it must stay out of Git", required=True)
             return False
         try:
+
             import xarray as xr
             with xr.open_dataset(self.reference_dataset) as dataset:
                 if "data" not in dataset or "time" not in dataset:

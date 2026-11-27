@@ -32,10 +32,22 @@ class ResidualBlock(nn.Module):
 
 
 class MonsoonResUNet(nn.Module):
-    """Predict a normalized daily delta using weather plus two static maps and season."""
+    """Predict a normalized daily delta using 1- or 3-day weather history.
+
+    The original 9-input-channel checkpoint remains loadable (one weather day,
+    two static maps, one seasonal channel). New training uses 21 channels:
+    three consecutive weather states, two static maps, and one seasonal channel.
+    """
 
     def __init__(self, in_channels: int = 9, out_channels: int = 6, base_ch: int = 32) -> None:
         super().__init__()
+        if in_channels < 9 or (in_channels - 3) % 6 != 0:
+            raise ValueError("in_channels must be 9 (1-day) or 21 (3-day), with 2 static + 1 seasonal channels")
+        self.in_channels = int(in_channels)
+        self.history_days = (self.in_channels - 3) // 6
+        if self.history_days not in (1, 3):
+            raise ValueError("Only 1-day and 3-day history models are supported")
+
         self.in_proj = nn.Conv2d(in_channels, base_ch, kernel_size=3, padding=1)
         self.enc1 = ResidualBlock(base_ch, base_ch)
         self.enc2 = ResidualBlock(base_ch, base_ch * 2)
@@ -45,7 +57,8 @@ class MonsoonResUNet(nn.Module):
         self.out_head = nn.Conv2d(base_ch, out_channels, kernel_size=3, padding=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        dynamic = x[:, :6]
+        latest_start = (self.history_days - 1) * 6
+        dynamic = x[:, latest_start : latest_start + 6]
         e1 = self.enc1(F.silu(self.in_proj(x)))
         e2 = self.enc2(F.avg_pool2d(e1, kernel_size=2, ceil_mode=True))
         z = self.bottleneck(F.avg_pool2d(e2, kernel_size=2, ceil_mode=True))
@@ -71,8 +84,8 @@ def normalize_static_maps(static_maps: np.ndarray | torch.Tensor, device=None) -
 
 
 def _stats_tensors(stats: dict[str, Any], device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-    mean = torch.as_tensor(stats["mean"], dtype=torch.float32, device=device).view(1, 6, 1, 1)
-    std = torch.as_tensor(stats["std"], dtype=torch.float32, device=device).view(1, 6, 1, 1)
+    mean = torch.as_tensor(stats["mean"], dtype=torch.float32, device=device).view(1, 1, 6, 1, 1)
+    std = torch.as_tensor(stats["std"], dtype=torch.float32, device=device).view(1, 1, 6, 1, 1)
     if torch.any(std <= 0):
         raise ValueError("all channel standard deviations must be positive")
     return mean, std
@@ -87,27 +100,57 @@ def rollout_10_days(
     doy: float | np.ndarray | torch.Tensor,
     steps: int = 10,
 ) -> torch.Tensor:
-    """Return [steps,6,H,W] or [B,steps,6,H,W] values in physical units.
+    """Return physical forecasts from one state or a 3-day history.
 
-    ``doy`` is the day of year for the last observed input day. Forecast step 1
-    uses the following day, matching the API contract.
+    Accepted input shapes:
+      * [6,H,W] or [B,6,H,W] for a one-day state
+      * [3,6,H,W] or [B,3,6,H,W] for three consecutive states, oldest first
+
+    A 9-channel legacy model uses only the latest state. A 21-channel model
+    consumes all three states. For a 21-channel model, a one-state input is
+    repeated three times as a compatibility fallback; official inference should
+    pass the full 3-day history.
     """
     if not 1 <= int(steps) <= 10:
         raise ValueError("steps must be between 1 and 10")
+
     device = next(model.parameters()).device
     x = torch.as_tensor(x0_physical, dtype=torch.float32, device=device)
-    single = x.ndim == 3
-    if single:
-        x = x.unsqueeze(0)
-    if x.ndim != 4 or x.shape[1] != 6:
-        raise ValueError("x0 must have shape [6,H,W] or [B,6,H,W]")
+    single = False
 
-    batch, _, height, width = x.shape
+    if x.ndim == 3 and x.shape[0] == 6:
+        x = x.unsqueeze(0).unsqueeze(1)  # [1,1,6,H,W]
+        single = True
+    elif x.ndim == 4 and x.shape[0] == 3 and x.shape[1] == 6:
+        x = x.unsqueeze(0)  # [1,3,6,H,W]
+        single = True
+    elif x.ndim == 4 and x.shape[1] == 6:
+        x = x.unsqueeze(1)  # [B,1,6,H,W]
+        single = True
+    elif x.ndim == 5 and x.shape[2] == 6:
+        pass
+    else:
+        raise ValueError("x0 must be [6,H,W], [B,6,H,W], [3,6,H,W], or [B,3,6,H,W]")
+
+    if x.shape[2] != 6:
+        raise ValueError("weather history must contain six channels")
+
+    batch, supplied_days, _, height, width = x.shape
+    required_days = model.history_days
+    if supplied_days > required_days:
+        x = x[:, -required_days:]
+    elif supplied_days < required_days:
+        if supplied_days == 1:
+            x = x.expand(batch, required_days, 6, height, width).clone()
+        else:
+            raise ValueError(f"model expects {required_days} history days, received {supplied_days}")
+
     mean, std = _stats_tensors(stats, device)
     static = normalize_static_maps(static_maps, device=device)
     if static.shape[-2:] != (height, width):
         raise ValueError("static map grid must match the weather grid")
     static = static.unsqueeze(0).expand(batch, 2, height, width)
+
     doy_t = torch.as_tensor(doy, dtype=torch.float32, device=device).reshape(-1)
     if doy_t.numel() == 1 and batch > 1:
         doy_t = doy_t.expand(batch)
@@ -115,18 +158,20 @@ def rollout_10_days(
         raise ValueError("doy must be scalar or have one value per batch item")
     doy_t = doy_t.view(batch, 1, 1, 1)
 
-    current = (x - mean) / std
+    history = (x - mean) / std
     outputs = []
     for step in range(int(steps)):
         forecast_doy = doy_t + step + 1
         seasonal = torch.sin(2.0 * math.pi * forecast_doy / 365.25).expand(batch, 1, height, width)
-        model_input = torch.cat([current, static, seasonal], dim=1)
-        current = model(model_input)
-        physical = current * std + mean
+        model_input = torch.cat([history.flatten(1, 2), static, seasonal], dim=1)
+        current_norm = model(model_input)
+        physical = current_norm * std[:, 0] + mean[:, 0]
         physical = physical.clone()
         physical[:, 1] = torch.clamp(physical[:, 1], min=0.0)
         physical[:, 5] = torch.clamp(physical[:, 5], min=0.0)
+
         current = (physical - mean) / std
+
         outputs.append(physical)
 
     result = torch.stack(outputs, dim=1)

@@ -1,4 +1,6 @@
+
 """Evaluate MonsoonResUNet on held-out validation years (2020-2021) using R1_CONTRACT.md metrics."""
+
 
 import json
 import sys
@@ -16,6 +18,7 @@ from train.model import MonsoonResUNet, rollout_10_days
 
 DATA_PATH = ROOT / "data" / "india_climate_train.nc"
 CKPT_PATH = ROOT / "weights" / "monsoon_unet.pt"
+
 STATIC_PATH = ROOT / "assets" / "static_maps.npy"
 OUT_JSON_PATH = ROOT / "assets" / "benchmark_results.json"
 
